@@ -6,8 +6,8 @@ Save some representative images from each dataset to disk.
 import random
 import torch
 import argparse
-from domainbed import hparams_registry
-from domainbed import datasets
+from .. import hparams_registry
+from .. import datasets
 import imageio
 import os
 from tqdm import tqdm

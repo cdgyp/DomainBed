@@ -1,13 +1,14 @@
 # Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
 import numpy as np
-from domainbed.lib import misc
+from .lib import misc
+from .....utils import new_writer
 
 
 def _define_hparam(hparams, hparam_name, default_val, random_val_fn):
     hparams[hparam_name] = (hparams, hparam_name, default_val, random_val_fn)
 
 
-def _hparams(algorithm, dataset, random_seed):
+def _hparams(algorithm, dataset, random_seed, log_dir: str):
     """
     Global registry of hyperparams. Each entry is a (default, random) tuple.
     New algorithms / networks / etc. should add entries here.
@@ -27,13 +28,14 @@ def _hparams(algorithm, dataset, random_seed):
 
     # Unconditional hparam definitions.
 
-    _hparam('data_augmentation', True, lambda r: True)
+    _hparam('data_augmentation', False, lambda r: False)
     _hparam('resnet18', False, lambda r: False)
     _hparam('resnet_dropout', 0., lambda r: r.choice([0., 0.1, 0.5]))
     _hparam('class_balanced', False, lambda r: False)
     # TODO: nonlinear classifiers disabled
     _hparam('nonlinear_classifier', False,
             lambda r: bool(r.choice([False, False])))
+    _hparam('writer', new_writer(log_dir), lambda r: new_writer(log_dir))
 
     # Algorithm-specific hparam definitions. Each block of code below
     # corresponds to exactly one algorithm.
@@ -182,8 +184,8 @@ def _hparams(algorithm, dataset, random_seed):
     return hparams
 
 
-def default_hparams(algorithm, dataset):
-    return {a: b for a, (b, c) in _hparams(algorithm, dataset, 0).items()}
+def default_hparams(algorithm, dataset, log_dir):
+    return {a: b for a, (b, c) in _hparams(algorithm, dataset, 0, log_dir).items()}
 
 
 def random_hparams(algorithm, dataset, seed):

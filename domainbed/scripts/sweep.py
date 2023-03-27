@@ -18,11 +18,11 @@ import uuid
 import numpy as np
 import torch
 
-from domainbed import datasets
-from domainbed import hparams_registry
-from domainbed import algorithms
-from domainbed.lib import misc
-from domainbed import command_launchers
+from .. import datasets
+from .. import hparams_registry
+from .. import algorithms
+from ..lib import misc
+from .. import command_launchers
 
 import tqdm
 import shlex

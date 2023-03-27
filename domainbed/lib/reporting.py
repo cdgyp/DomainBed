@@ -7,7 +7,7 @@ import os
 
 import tqdm
 
-from domainbed.lib.query import Q
+from .query import Q
 
 def load_records(path):
     records = []

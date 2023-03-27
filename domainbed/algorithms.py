@@ -8,14 +8,16 @@ import torch.autograd as autograd
 import copy
 import numpy as np
 from collections import OrderedDict
+from torch.utils.tensorboard import SummaryWriter
+
 try:
     from backpack import backpack, extend
     from backpack.extensions import BatchGrad
 except:
     backpack = None
 
-from domainbed import networks
-from domainbed.lib.misc import (
+from . import networks
+from .lib.misc import (
     random_pairs_of_minibatches, split_meta_train_test, ParamDict,
     MovingAverage, l2_between_dicts, proj, Nonparametric
 )
@@ -213,8 +215,8 @@ class AbstractDANN(Algorithm):
 
         super(AbstractDANN, self).__init__(input_shape, num_classes, num_domains,
                                   hparams)
-
         self.register_buffer('update_count', torch.tensor([0]))
+        self.step = 0
         self.conditional = conditional
         self.class_balance = class_balance
 
@@ -243,24 +245,35 @@ class AbstractDANN(Algorithm):
             lr=self.hparams["lr_g"],
             weight_decay=self.hparams['weight_decay_g'],
             betas=(self.hparams['beta1'], 0.9))
+        
+        self.writer: SummaryWriter = hparams['writer']
+        hparams['writer'] = None
 
     def update(self, minibatches, unlabeled=None):
-        device = "cuda" if minibatches[0][0].is_cuda else "cpu"
+        device = minibatches[0][0].device
         self.update_count += 1
-        all_x = torch.cat([x for x, y in minibatches])
+        self.step += 1
+        x = torch.cat([x for x, y in minibatches] + unlabeled)
         all_y = torch.cat([y for x, y in minibatches])
-        all_z = self.featurizer(all_x)
+        z = self.featurizer(x)
+        all_z = z[:all_y.shape[0]]
+
         if self.conditional:
             disc_input = all_z + self.class_embeddings(all_y)
+            raise NotImplemented()
         else:
-            disc_input = all_z
+            disc_input = z
         disc_out = self.discriminator(disc_input)
         disc_labels = torch.cat([
             torch.full((x.shape[0], ), i, dtype=torch.int64, device=device)
             for i, (x, y) in enumerate(minibatches)
+        ] + [
+            torch.full((x.shape[0], ), i + len(minibatches), dtype=torch.int64, device=device)
+            for i, x in enumerate(unlabeled)
         ])
 
         if self.class_balance:
+            raise NotImplemented()
             y_counts = F.one_hot(all_y).sum(dim=0)
             weights = 1. / (y_counts[all_y] * y_counts.shape[0]).float()
             disc_loss = F.cross_entropy(disc_out, disc_labels, reduction='none')
@@ -268,11 +281,13 @@ class AbstractDANN(Algorithm):
         else:
             disc_loss = F.cross_entropy(disc_out, disc_labels)
 
-        input_grad = autograd.grad(
-            F.cross_entropy(disc_out, disc_labels, reduction='sum'),
-            [disc_input], create_graph=True)[0]
-        grad_penalty = (input_grad**2).sum(dim=1).mean(dim=0)
-        disc_loss += self.hparams['grad_penalty'] * grad_penalty
+        # input_grad = autograd.grad(
+            # F.cross_entropy(disc_out, disc_labels, reduction='sum'),
+            # [disc_input], create_graph=True)[0]
+        # grad_penalty = (input_grad**2).sum(dim=1).mean(dim=0)
+        # disc_loss += self.hparams['grad_penalty'] * grad_penalty
+
+        self.writer.add_scalar('disc', disc_loss, global_step=self.step)
 
         d_steps_per_g = self.hparams['d_steps_per_g_step']
         if (self.update_count.item() % (1+d_steps_per_g) < d_steps_per_g):
@@ -284,6 +299,7 @@ class AbstractDANN(Algorithm):
         else:
             all_preds = self.classifier(all_z)
             classifier_loss = F.cross_entropy(all_preds, all_y)
+            self.writer.add_scalar('classifier', classifier_loss, global_step=self.step)
             gen_loss = (classifier_loss +
                         (self.hparams['lambda'] * -disc_loss))
             self.disc_opt.zero_grad()

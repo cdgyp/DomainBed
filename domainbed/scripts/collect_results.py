@@ -16,11 +16,11 @@ import sys
 import numpy as np
 import tqdm
 
-from domainbed import datasets
-from domainbed import algorithms
-from domainbed.lib import misc, reporting
-from domainbed import model_selection
-from domainbed.lib.query import Q
+from .. import datasets
+from .. import algorithms
+from ..lib import misc, reporting
+from .. import model_selection
+from ..lib.query import Q
 import warnings
 
 def format_mean(data, latex):

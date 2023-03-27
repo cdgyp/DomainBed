@@ -15,18 +15,19 @@ import torch
 import torchvision
 import torch.utils.data
 
-from domainbed import datasets
-from domainbed import hparams_registry
-from domainbed import algorithms
-from domainbed.lib import misc
-from domainbed.lib.fast_data_loader import InfiniteDataLoader, FastDataLoader
+from .. import datasets
+from .. import hparams_registry
+from .. import algorithms
+from ..lib import misc
+from ..lib.fast_data_loader import InfiniteDataLoader, FastDataLoader
+from ......utils import start_tensorboard_server
 
-if __name__ == "__main__":
+if __name__ == "__main__" or True:
     parser = argparse.ArgumentParser(description='Domain generalization')
     parser.add_argument('--data_dir', type=str)
     parser.add_argument('--dataset', type=str, default="RotatedMNIST")
     parser.add_argument('--algorithm', type=str, default="ERM")
-    parser.add_argument('--task', type=str, default="domain_generalization",
+    parser.add_argument('--task', type=str, default="domain_adaptation",
         choices=["domain_generalization", "domain_adaptation"])
     parser.add_argument('--hparams', type=str,
         help='JSON-serialized hparams dict')
@@ -41,13 +42,17 @@ if __name__ == "__main__":
         help='Number of steps. Default is dataset-dependent.')
     parser.add_argument('--checkpoint_freq', type=int, default=None,
         help='Checkpoint every N steps. Default is dataset-dependent.')
+    parser.add_argument('--train_envs', type=int, nargs='+', default=[0])
     parser.add_argument('--test_envs', type=int, nargs='+', default=[0])
     parser.add_argument('--output_dir', type=str, default="train_output")
     parser.add_argument('--holdout_fraction', type=float, default=0.2)
-    parser.add_argument('--uda_holdout_fraction', type=float, default=0,
+    parser.add_argument('--uda_holdout_fraction', type=float, default=0.9,
         help="For domain adaptation, % of test to use unlabeled for training.")
     parser.add_argument('--skip_model_save', action='store_true')
     parser.add_argument('--save_model_every_checkpoint', action='store_true')
+    parser.add_argument('--log_dir', type=str, default=None)
+    parser.add_argument('--device', type=str, default='cpu')
+    parser.add_argument('--batch_size', type=int, default=None)
     args = parser.parse_args()
 
     # If we ever want to implement checkpointing, just persist these values
@@ -73,12 +78,16 @@ if __name__ == "__main__":
         print('\t{}: {}'.format(k, v))
 
     if args.hparams_seed == 0:
-        hparams = hparams_registry.default_hparams(args.algorithm, args.dataset)
+        hparams = hparams_registry.default_hparams(args.algorithm, args.dataset, args.log_dir)
     else:
         hparams = hparams_registry.random_hparams(args.algorithm, args.dataset,
             misc.seed_hash(args.hparams_seed, args.trial_seed))
     if args.hparams:
         hparams.update(json.loads(args.hparams))
+    if args.batch_size:
+        hparams['batch_size'] = args.batch_size
+
+    start_tensorboard_server(hparams['writer'].get_logdir())
 
     print('HParams:')
     for k, v in sorted(hparams.items()):
@@ -90,10 +99,7 @@ if __name__ == "__main__":
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
-    if torch.cuda.is_available():
-        device = "cuda"
-    else:
-        device = "cpu"
+    device = args.device
 
     if args.dataset in vars(datasets):
         dataset = vars(datasets)[args.dataset](args.data_dir,
@@ -122,7 +128,6 @@ if __name__ == "__main__":
         out, in_ = misc.split_dataset(env,
             int(len(env)*args.holdout_fraction),
             misc.seed_hash(args.trial_seed, env_i))
-
         if env_i in args.test_envs:
             uda, in_ = misc.split_dataset(in_,
                 int(len(in_)*args.uda_holdout_fraction),
@@ -149,7 +154,7 @@ if __name__ == "__main__":
         batch_size=hparams['batch_size'],
         num_workers=dataset.N_WORKERS)
         for i, (env, env_weights) in enumerate(in_splits)
-        if i not in args.test_envs]
+        if i not in args.test_envs and i in args.train_envs]
 
     uda_loaders = [InfiniteDataLoader(
         dataset=env,
@@ -173,7 +178,8 @@ if __name__ == "__main__":
 
     algorithm_class = algorithms.get_algorithm_class(args.algorithm)
     algorithm = algorithm_class(dataset.input_shape, dataset.num_classes,
-        len(dataset) - len(args.test_envs), hparams)
+        len(dataset) if args.task == 'domain_adaptation' else len(dataset) - len(args.test_envs), 
+        hparams)
 
     if algorithm_dict is not None:
         algorithm.load_state_dict(algorithm_dict)
