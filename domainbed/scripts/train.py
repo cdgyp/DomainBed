@@ -128,7 +128,7 @@ if __name__ == "__main__" or True:
         out, in_ = misc.split_dataset(env,
             int(len(env)*args.holdout_fraction),
             misc.seed_hash(args.trial_seed, env_i))
-        if env_i in args.test_envs:
+        if env_i in args.test_envs and args.task == 'domain_adaptation':
             uda, in_ = misc.split_dataset(in_,
                 int(len(in_)*args.uda_holdout_fraction),
                 misc.seed_hash(args.trial_seed, env_i))
