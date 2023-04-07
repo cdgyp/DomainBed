@@ -87,7 +87,8 @@ if __name__ == "__main__" or True:
     if args.batch_size:
         hparams['batch_size'] = args.batch_size
 
-    start_tensorboard_server(hparams['writer'].get_logdir())
+    # start_tensorboard_server(hparams['writer'].get_logdir())
+    hparams['writer'] = None
 
     print('HParams:')
     for k, v in sorted(hparams.items()):
@@ -124,7 +125,6 @@ if __name__ == "__main__" or True:
     uda_splits = []
     for env_i, env in enumerate(dataset):
         uda = []
-
         out, in_ = misc.split_dataset(env,
             int(len(env)*args.holdout_fraction),
             misc.seed_hash(args.trial_seed, env_i))
@@ -145,6 +145,7 @@ if __name__ == "__main__" or True:
         if len(uda):
             uda_splits.append((uda, uda_weights))
 
+
     if args.task == "domain_adaptation" and len(uda_splits) == 0:
         raise ValueError("Not enough unlabeled samples for domain adaptation.")
 
@@ -154,7 +155,7 @@ if __name__ == "__main__" or True:
         batch_size=hparams['batch_size'],
         num_workers=dataset.N_WORKERS)
         for i, (env, env_weights) in enumerate(in_splits)
-        if i not in args.test_envs and i in args.train_envs]
+        if i not in args.test_envs and (args.task != 'domain_adaptation' or i in args.train_envs)]
 
     uda_loaders = [InfiniteDataLoader(
         dataset=env,

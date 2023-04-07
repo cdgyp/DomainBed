@@ -110,15 +110,15 @@ def _hparams(algorithm, dataset, random_seed, log_dir: str):
         _hparam('groupdro_eta', 1e-2, lambda r: 10 ** r.uniform(-3, -1))
 
     elif algorithm == "IB_ERM":
-        _hparam('ib_lambda', 1e2, lambda r: 10**r.uniform(-1, 5))
+        _hparam('ib_lambda', 1.5e1, lambda r: 10**r.uniform(-1, 2))
         _hparam('ib_penalty_anneal_iters', 500,
                 lambda r: int(10**r.uniform(0, 4)))
 
     elif algorithm == "IB_IRM":
-        _hparam('irm_lambda', 1e2, lambda r: 10**r.uniform(-1, 5))
+        _hparam('irm_lambda', 1, lambda r: 10**r.uniform(-1, 1))
         _hparam('irm_penalty_anneal_iters', 500,
                 lambda r: int(10**r.uniform(0, 4)))
-        _hparam('ib_lambda', 1e2, lambda r: 10**r.uniform(-1, 5))
+        _hparam('ib_lambda', 1.5e1, lambda r: 10**r.uniform(-1, 1))
         _hparam('ib_penalty_anneal_iters', 500,
                 lambda r: int(10**r.uniform(0, 4)))
 

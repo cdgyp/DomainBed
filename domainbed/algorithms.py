@@ -253,7 +253,7 @@ class AbstractDANN(Algorithm):
         device = minibatches[0][0].device
         self.update_count += 1
         self.step += 1
-        x = torch.cat([x for x, y in minibatches] + unlabeled)
+        x = torch.cat([x for x, y in minibatches] + (unlabeled if unlabeled is not None else []))
         all_y = torch.cat([y for x, y in minibatches])
         z = self.featurizer(x)
         all_z = z[:all_y.shape[0]]
@@ -267,10 +267,10 @@ class AbstractDANN(Algorithm):
         disc_labels = torch.cat([
             torch.full((x.shape[0], ), i, dtype=torch.int64, device=device)
             for i, (x, y) in enumerate(minibatches)
-        ] + [
+        ] + ([
             torch.full((x.shape[0], ), i + len(minibatches), dtype=torch.int64, device=device)
             for i, x in enumerate(unlabeled)
-        ])
+        ] if unlabeled is not None else []))
 
         if self.class_balance:
             raise NotImplemented()
@@ -281,13 +281,13 @@ class AbstractDANN(Algorithm):
         else:
             disc_loss = F.cross_entropy(disc_out, disc_labels)
 
-        # input_grad = autograd.grad(
-            # F.cross_entropy(disc_out, disc_labels, reduction='sum'),
-            # [disc_input], create_graph=True)[0]
-        # grad_penalty = (input_grad**2).sum(dim=1).mean(dim=0)
-        # disc_loss += self.hparams['grad_penalty'] * grad_penalty
+        input_grad = autograd.grad(
+            F.cross_entropy(disc_out, disc_labels, reduction='sum'),
+            [disc_input], create_graph=True)[0]
+        grad_penalty = (input_grad**2).sum(dim=1).mean(dim=0)
+        disc_loss += self.hparams['grad_penalty'] * grad_penalty
 
-        self.writer.add_scalar('disc', disc_loss, global_step=self.step)
+        # self.writer.add_scalar('disc', disc_loss, global_step=self.step)
 
         d_steps_per_g = self.hparams['d_steps_per_g_step']
         if (self.update_count.item() % (1+d_steps_per_g) < d_steps_per_g):
@@ -299,7 +299,7 @@ class AbstractDANN(Algorithm):
         else:
             all_preds = self.classifier(all_z)
             classifier_loss = F.cross_entropy(all_preds, all_y)
-            self.writer.add_scalar('classifier', classifier_loss, global_step=self.step)
+            # self.writer.add_scalar('classifier', classifier_loss, global_step=self.step)
             gen_loss = (classifier_loss +
                         (self.hparams['lambda'] * -disc_loss))
             self.disc_opt.zero_grad()
@@ -335,7 +335,7 @@ class IRM(ERM):
 
     @staticmethod
     def _irm_penalty(logits, y):
-        device = "cuda" if logits[0][0].is_cuda else "cpu"
+        device = logits[0][0].device
         scale = torch.tensor(1.).to(device).requires_grad_()
         loss_1 = F.cross_entropy(logits[::2] * scale, y[::2])
         loss_2 = F.cross_entropy(logits[1::2] * scale, y[1::2])
@@ -345,7 +345,7 @@ class IRM(ERM):
         return result
 
     def update(self, minibatches, unlabeled=None):
-        device = "cuda" if minibatches[0][0].is_cuda else "cpu"
+        device = minibatches[0][0].device
         penalty_weight = (self.hparams['irm_lambda'] if self.update_count
                           >= self.hparams['irm_penalty_anneal_iters'] else
                           1.0)
@@ -470,7 +470,7 @@ class GroupDRO(ERM):
         self.register_buffer("q", torch.Tensor())
 
     def update(self, minibatches, unlabeled=None):
-        device = "cuda" if minibatches[0][0].is_cuda else "cpu"
+        device = minibatches[0][0].device
 
         if not len(self.q):
             self.q = torch.ones(len(minibatches)).to(device)
@@ -829,7 +829,7 @@ class SagNet(Algorithm):
         return self.network_s(self.randomize(self.network_f(x), "content"))
 
     def randomize(self, x, what="style", eps=1e-5):
-        device = "cuda" if x.is_cuda else "cpu"
+        device = x.device
         sizes = x.size()
         alpha = torch.rand(sizes[0], 1).to(device)
 
@@ -893,7 +893,7 @@ class RSC(ERM):
         self.num_classes = num_classes
 
     def update(self, minibatches, unlabeled=None):
-        device = "cuda" if minibatches[0][0].is_cuda else "cpu"
+        device = minibatches[0][0].device
 
         # inputs
         all_x = torch.cat([x for x, y in minibatches])
@@ -1519,7 +1519,7 @@ class IB_ERM(ERM):
         self.register_buffer('update_count', torch.tensor([0]))
 
     def update(self, minibatches, unlabeled=None):
-        device = "cuda" if minibatches[0][0].is_cuda else "cpu"
+        device = minibatches[0][0].device
         ib_penalty_weight = (self.hparams['ib_lambda'] if self.update_count
                           >= self.hparams['ib_penalty_anneal_iters'] else
                           0.0)
@@ -1577,7 +1577,7 @@ class IB_IRM(ERM):
 
     @staticmethod
     def _irm_penalty(logits, y):
-        device = "cuda" if logits[0][0].is_cuda else "cpu"
+        device = logits[0][0].device
         scale = torch.tensor(1.).to(device).requires_grad_()
         loss_1 = F.cross_entropy(logits[::2] * scale, y[::2])
         loss_2 = F.cross_entropy(logits[1::2] * scale, y[1::2])
@@ -1587,7 +1587,7 @@ class IB_IRM(ERM):
         return result
 
     def update(self, minibatches, unlabeled=None):
-        device = "cuda" if minibatches[0][0].is_cuda else "cpu"
+        device = minibatches[0][0].device
         irm_penalty_weight = (self.hparams['irm_lambda'] if self.update_count
                           >= self.hparams['irm_penalty_anneal_iters'] else
                           1.0)
@@ -1763,7 +1763,7 @@ class AbstractCAD(Algorithm):
         return finite_mean(bn_loss)
 
     def update(self, minibatches, unlabeled=None):
-        device = "cuda" if minibatches[0][0].is_cuda else "cpu"
+        device = minibatches[0][0].device
         all_x = torch.cat([x for x, y in minibatches])
         all_y = torch.cat([y for x, y in minibatches])
         all_z = self.featurizer(all_x)
@@ -1854,7 +1854,7 @@ class Transfer(Algorithm):
         return max_env_loss - min_env_loss
 
     def update(self, minibatches, unlabeled=None):
-        device = "cuda" if minibatches[0][0].is_cuda else "cpu"
+        device = minibatches[0][0].device
         # outer loop
         all_x = torch.cat([x for x, y in minibatches])
         all_y = torch.cat([y for x, y in minibatches])
@@ -1878,7 +1878,7 @@ class Transfer(Algorithm):
         return {'loss': loss.item(), 'gap': -gap.item()}
 
     def update_second(self, minibatches, unlabeled=None):
-        device = "cuda" if minibatches[0][0].is_cuda else "cpu"
+        device = minibatches[0][0].device
         self.update_count = (self.update_count + 1) % (1 + self.d_steps_per_g)
         if self.update_count.item() == 1:
             all_x = torch.cat([x for x, y in minibatches])

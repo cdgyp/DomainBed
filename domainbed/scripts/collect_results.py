@@ -23,6 +23,36 @@ from .. import model_selection
 from ..lib.query import Q
 import warnings
 
+import matplotlib.pyplot as plt
+def plot_traces(traces, show_s=True):
+    # 绘制每个 trace 的折线图
+    for i, (name, trace) in enumerate(traces):
+        # 获取每个数据点的 acc_s 和 acc_t 值，并按照 step 排序
+        data = sorted([(d['step'], d['acc_s'], d['acc_t']) for d in trace])
+        steps, acc_s, acc_t = zip(*data)
+
+        # 绘制 acc_t 的折线图，并添加算法名称到图例
+        plt.plot(steps, acc_t, linestyle='-', color=f'C{i}', label=f'{name} acc_t')
+
+        # 如果需要显示 acc_s，则绘制 acc_s 的折线图
+        if show_s:
+            plt.plot(steps, acc_s, linestyle='--', color=f'C{i}', label=f'{name} acc_s')
+
+    plt.ylim([0, 1])
+
+    # 设置图例的位置和样式
+    plt.legend(bbox_to_anchor=(1, 1), loc='upper left', borderaxespad=0.)
+
+    # 添加标签和标题
+    plt.xlabel('Step')
+    plt.ylabel('Accuracy')
+    plt.title('Accuracy vs. Step')
+
+    # 显示图形
+    plt.show()
+
+
+
 def format_mean(data, latex):
     """Given a list of datapoints, return a string describing their mean and
     standard error"""
@@ -66,7 +96,7 @@ def print_table(table, header_text, row_labels, col_labels, colwidth=10,
         print("\\end{tabular}}")
         print("\\end{center}")
 
-def print_results_tables(records, selection_method, latex):
+def print_results_tables(records, selection_method, latex, show_traces):
     """Given all records, print a results table for each dataset."""
     grouped_records = reporting.get_grouped_records(records).map(lambda group:
         { **group, "sweep_acc": selection_method.sweep_acc(group["records"]) }
@@ -117,8 +147,10 @@ def print_results_tables(records, selection_method, latex):
     if latex:
         print()
         print("\\subsubsection{Averages}")
+    
 
     table = [[None for _ in [*dataset_names, "Avg"]] for _ in alg_names]
+    print(len(alg_names))
     for i, algorithm in enumerate(alg_names):
         means = []
         for j, dataset in enumerate(dataset_names):
@@ -134,12 +166,35 @@ def print_results_tables(records, selection_method, latex):
         if None in means:
             table[i][-1] = "X"
         else:
-            table[i][-1] = "{:.1f}".format(sum(means) / len(means))
+            if len(means) > 0:
+                table[i][-1] = "{:.1f}".format(sum(means) / len(means))
+            else:
+                table[i][-1] = '?'
 
     col_labels = ["Algorithm", *dataset_names, "Avg"]
     header_text = f"Averages, model selection method: {selection_method.name}"
     print_table(table, header_text, alg_names, col_labels, colwidth=25,
         latex=latex)
+    
+    if show_traces:
+        traces  =[]
+        for i, algorithm in enumerate(alg_names):
+            for j, dataset in enumerate(dataset_names):
+                trace = []
+                for r in records:
+                    if r['args']['algorithm'] == algorithm and r['args']['dataset'] == dataset:
+                        r: dict
+                        def get_env_id(key: str):
+                            id_str = key[key.find('v')+1:]
+                            id_str = id_str[:id_str.find('_')]
+                            return int(id_str)
+                        acc = {get_env_id(key): r[key] for key in r.keys() if 'env' in key and 'in_acc' in key}
+                        acc_s = [acc[key] for key in acc.keys() if key not in r['args']['test_envs']]
+                        acc_t = [acc[key] for key in acc.keys() if key in r['args']['test_envs']]
+                        trace.append({'step': r['step'], 'acc_s': sum(acc_s)/len(acc_s), 'acc_t': sum(acc_t)/len(acc_t)})
+            
+                traces.append((f'{algorithm}', trace))
+        plot_traces(traces, False)
 
 if __name__ == "__main__":
     np.set_printoptions(suppress=True)
@@ -148,6 +203,7 @@ if __name__ == "__main__":
         description="Domain generalization testbed")
     parser.add_argument("--input_dir", type=str, required=True)
     parser.add_argument("--latex", action="store_true")
+    parser.add_argument("--traces", action="store_true")
     args = parser.parse_args()
 
     results_file = "results.tex" if args.latex else "results.txt"
@@ -177,7 +233,7 @@ if __name__ == "__main__":
             print()
             print("\\subsection{{Model selection: {}}}".format(
                 selection_method.name))
-        print_results_tables(records, selection_method, args.latex)
+        print_results_tables(records, selection_method, args.latex, args.traces)
 
     if args.latex:
         print("\\end{document}")

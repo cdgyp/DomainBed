@@ -12,6 +12,8 @@ from torchvision.transforms.functional import rotate
 from wilds.datasets.camelyon17_dataset import Camelyon17Dataset
 from wilds.datasets.fmow_dataset import FMoWDataset
 
+from .....data.synthetic import CenteredImageScene, SyntheticDataset, assure_tuple, OptionalToTensor
+
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 DATASETS = [
@@ -30,7 +32,9 @@ DATASETS = [
     "SVIRO",
     # WILDS datasets
     "WILDSCamelyon",
-    "WILDSFMoW"
+    "WILDSFMoW",
+    # Spurious Correlation datasets
+    "BackgroundSpuriousCorrelation",
 ]
 
 def get_dataset_class(dataset_name):
@@ -344,7 +348,6 @@ class WILDSDataset(MultipleDomainDataset):
         metadata_vals = wilds_dataset.metadata_array[:, metadata_index]
         return sorted(list(set(metadata_vals.view(-1).tolist())))
 
-
 class WILDSCamelyon(WILDSDataset):
     ENVIRONMENTS = [ "hospital_0", "hospital_1", "hospital_2", "hospital_3",
             "hospital_4"]
@@ -362,3 +365,27 @@ class WILDSFMoW(WILDSDataset):
         super().__init__(
             dataset, "region", test_envs, hparams['data_augmentation'], hparams)
 
+class BackgroundSpuriousCorrelation(MultipleDomainDataset):
+    CHECKPOINT_FREQ = 250
+    ENVIRONMENTS = SyntheticDataset.DOMAIN_NAMES
+    def __init__(self, root, test_envs, hparams) -> None:
+        super().__init__()
+        patch_size = 16
+        total_patch_number = 14
+        image_patch_number = 10
+        images = ImageFolder(root, OptionalToTensor())
+        self.num_classes = len(images.classes)
+        scene = CenteredImageScene(images, patch_size, total_patch_number, image_patch_number, self.num_classes)
+
+        self.datasets = []
+        for i, domain_name in enumerate(BackgroundSpuriousCorrelation.ENVIRONMENTS):
+            self.datasets.append(
+                SyntheticDataset(domain_name, i not in test_envs, scene, reduced=True)
+            )
+        
+        pn = assure_tuple(total_patch_number)
+
+        self.input_shape = (3, pn[0] * patch_size, pn[1] * patch_size)
+        
+
+        

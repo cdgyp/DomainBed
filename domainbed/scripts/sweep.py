@@ -39,7 +39,7 @@ class Job:
 
         self.train_args = copy.deepcopy(train_args)
         self.train_args['output_dir'] = self.output_dir
-        command = ['python', '-m', 'domainbed.scripts.train']
+        command = ['python', '-m', 'codes.models.baselines.DomainBed.domainbed.scripts.train']
         for k, v in sorted(self.train_args.items()):
             if isinstance(v, list):
                 v = ' '.join([str(v_) for v_ in v])
@@ -73,9 +73,10 @@ class Job:
         print('Making job directories:')
         for job in tqdm.tqdm(jobs, leave=False):
             os.makedirs(job.output_dir, exist_ok=True)
-        commands = [job.command_str for job in jobs]
-        launcher_fn(commands)
-        print(f'Launched {len(jobs)} jobs!')
+        for i, job in enumerate(jobs):
+            commands = [job.command_str]
+            launcher_fn(commands)
+            print(f'Launched {i}/{len(jobs)} jobs!')
 
     @staticmethod
     def delete(jobs):
@@ -96,15 +97,20 @@ def all_test_env_combinations(n):
             yield [i, j]
 
 def make_args_list(n_trials, dataset_names, algorithms, n_hparams_from, n_hparams, steps,
-    data_dir, task, holdout_fraction, single_test_envs, hparams):
+    data_dir, task, holdout_fraction, single_test_envs, hparams, device, test_envs):
     args_list = []
     for trial_seed in range(n_trials):
         for dataset in dataset_names:
             for algorithm in algorithms:
                 if single_test_envs:
-                    all_test_envs = [
-                        [i] for i in range(datasets.num_environments(dataset))]
+                    if test_envs and len(test_envs) > 0:
+                        all_test_envs = [[i] for i in test_envs]
+                    else:
+                        all_test_envs = [
+                            [i] for i in range(datasets.num_environments(dataset))]
                 else:
+                    if test_envs and len(test_envs) > 0:
+                        raise NotImplemented()
                     all_test_envs = all_test_env_combinations(
                         datasets.num_environments(dataset))
                 for test_envs in all_test_envs:
@@ -118,6 +124,7 @@ def make_args_list(n_trials, dataset_names, algorithms, n_hparams_from, n_hparam
                         train_args['data_dir'] = data_dir
                         train_args['task'] = task
                         train_args['trial_seed'] = trial_seed
+                        train_args['device'] = device
                         train_args['seed'] = misc.seed_hash(dataset,
                             algorithm, test_envs, hparams_seed, trial_seed)
                         if steps is not None:
@@ -153,6 +160,8 @@ if __name__ == "__main__":
     parser.add_argument('--holdout_fraction', type=float, default=0.2)
     parser.add_argument('--single_test_envs', action='store_true')
     parser.add_argument('--skip_confirmation', action='store_true')
+    parser.add_argument('--device', type=str, default='cpu')
+    parser.add_argument('--test_envs', nargs='+', type=int, default=[])
     args = parser.parse_args()
 
     args_list = make_args_list(
@@ -166,7 +175,9 @@ if __name__ == "__main__":
         task=args.task,
         holdout_fraction=args.holdout_fraction,
         single_test_envs=args.single_test_envs,
-        hparams=args.hparams
+        hparams=args.hparams,
+        device=args.device,
+        test_envs=args.test_envs
     )
 
     jobs = [Job(train_args, args.output_dir) for train_args in args_list]
