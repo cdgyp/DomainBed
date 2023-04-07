@@ -258,7 +258,7 @@ class AbstractDANN(Algorithm):
         z = self.featurizer(x)
         all_z = z[:all_y.shape[0]]
 
-        if self.conditional:
+        if self.conditional and unlabeled is not None:
             disc_input = all_z + self.class_embeddings(all_y)
             raise NotImplemented()
         else:
