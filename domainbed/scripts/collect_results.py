@@ -32,11 +32,11 @@ def plot_traces(traces, show_s=True):
         steps, acc_s, acc_t = zip(*data)
 
         # 绘制 acc_t 的折线图，并添加算法名称到图例
-        plt.plot(steps, acc_t, linestyle='-', color=f'C{i}', label=f'{name} acc_t')
+        plt.plot(steps, acc_t, linestyle='-', color=f'C{i}', label=f'{name}')
 
         # 如果需要显示 acc_s，则绘制 acc_s 的折线图
         if show_s:
-            plt.plot(steps, acc_s, linestyle='--', color=f'C{i}', label=f'{name} acc_s')
+            plt.plot(steps, acc_s, linestyle='--', color=f'C{i}', label=f'{name}')
 
     plt.ylim([0, 1])
 

@@ -180,6 +180,33 @@ class ContextNet(nn.Module):
     def forward(self, x):
         return self.context_net(x)
 
+from ....vit_pytorch.vit_pytorch.vit import ViT
+class WrappedViT(nn.Module):
+    class Hook:
+        def __init__(self):
+            self.feature = None
+        def __call__(self, module, input, output):
+            self.feature = output
+
+    def __init__(self, image_size):
+        super().__init__()
+        self.vit = ViT(
+            image_size=image_size,
+            num_classes=1,
+            patch_size=16,
+            dim=768,
+            heads=12,
+            depth=12,
+            mlp_dim=3072,
+        )
+        self.n_outputs = 768
+        self.hook = self.Hook()
+        self.hook_handle = self.vit.to_latent.register_forward_hook(self.hook)
+
+    def forward(self, x):
+        self.vit(x)
+        return self.hook.feature
+
 
 def Featurizer(input_shape, hparams):
     """Auto-select an appropriate featurizer for the given input shape."""
@@ -190,7 +217,12 @@ def Featurizer(input_shape, hparams):
     elif input_shape[1:3] == (32, 32):
         return wide_resnet.Wide_ResNet(input_shape, 16, 2, 0.)
     elif input_shape[1:3] == (224, 224):
-        return ResNet(input_shape, hparams)
+        if hparams['featurizer'] == 'CNN':
+            return ResNet(input_shape, hparams)
+        elif hparams['featurizer'] == 'ViT':
+            return WrappedViT(input_shape[1:3])
+        else:
+            raise NotImplementedError
     else:
         raise NotImplementedError
 

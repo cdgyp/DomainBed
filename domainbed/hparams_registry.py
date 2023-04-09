@@ -36,6 +36,7 @@ def _hparams(algorithm, dataset, random_seed, log_dir: str):
     _hparam('nonlinear_classifier', False,
             lambda r: bool(r.choice([False, False])))
     _hparam('writer', new_writer(log_dir), lambda r: new_writer(log_dir))
+    _hparam('featurizer', 'CNN', lambda r: 'CNN')
 
     # Algorithm-specific hparam definitions. Each block of code below
     # corresponds to exactly one algorithm.

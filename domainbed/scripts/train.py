@@ -53,6 +53,7 @@ if __name__ == "__main__" or True:
     parser.add_argument('--log_dir', type=str, default=None)
     parser.add_argument('--device', type=str, default='cpu')
     parser.add_argument('--batch_size', type=int, default=None)
+    parser.add_argument('--featurizer', type=str, default='CNN', choices=['CNN', 'ViT'])
     args = parser.parse_args()
 
     # If we ever want to implement checkpointing, just persist these values
@@ -86,6 +87,7 @@ if __name__ == "__main__" or True:
         hparams.update(json.loads(args.hparams))
     if args.batch_size:
         hparams['batch_size'] = args.batch_size
+    hparams['featurizer'] = args.featurizer
 
     # start_tensorboard_server(hparams['writer'].get_logdir())
     hparams['writer'] = None
