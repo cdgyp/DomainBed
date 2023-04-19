@@ -185,8 +185,8 @@ class WrappedViT(nn.Module):
     class Hook:
         def __init__(self):
             self.feature = None
-        def __call__(self, module, input, output):
-            self.feature = output
+        def __call__(self, module, input):
+            self.feature = input[0]
 
     def __init__(self, image_size):
         super().__init__()
@@ -201,11 +201,13 @@ class WrappedViT(nn.Module):
         )
         self.n_outputs = 768
         self.hook = self.Hook()
-        self.hook_handle = self.vit.to_latent.register_forward_hook(self.hook)
+        self.hook_handle = self.vit.mlp_head.register_forward_pre_hook(self.hook)
 
     def forward(self, x):
         self.vit(x)
-        return self.hook.feature
+        feature = self.hook.feature
+        self.hook.feature = None
+        return feature
 
 
 def Featurizer(input_shape, hparams):
