@@ -24,6 +24,14 @@ def load_records(path):
 
     return Q(records)
 
+def load_records_multiple_paths(paths):
+    qs = []
+    for path in paths:
+        q = load_records(path)
+        qs = qs + q._list
+    return Q(qs)
+        
+
 def get_grouped_records(records):
     """Group records by (trial_seed, dataset, algorithm, test_env). Because
     records can have multiple test envs, a given record may appear in more than
