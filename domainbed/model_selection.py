@@ -2,6 +2,8 @@
 
 import itertools
 import numpy as np
+from collections import deque
+from math import sqrt
 
 def get_test_records(records):
     """Given records with a common test env, get the test records (i.e. the
@@ -67,6 +69,7 @@ class OracleSelectionMethod(SelectionMethod):
         test_out_acc_key = 'env{}_out_acc'.format(test_env)
         test_in_acc_key = 'env{}_in_acc'.format(test_env)
         chosen_record = run_records.sorted(lambda r: r['step'])[-1]
+        # chosen_record = run_records.sorted(lambda r: r[test_in_acc_key])[-1]
         return {
             'val_acc':  chosen_record[test_out_acc_key],
             'test_acc': chosen_record[test_in_acc_key]
@@ -139,3 +142,89 @@ class LeaveOneOutSelectionMethod(SelectionMethod):
             return step_accs.argmax('val_acc')
         else:
             return None
+
+from .lib.query import Q
+class InformationHeatSelectionMethod(SelectionMethod):
+    name="selection by distortion and inductive bias"
+    beta = 0.1
+    window_size = 5
+
+    @classmethod
+    def run_acc(self, run_records: Q):
+        if run_records[0]['args']['steps'] < 5000:
+            return None
+        min_Q_F = run_records.map(lambda rec: rec['heat']['Q_F']).min()
+        if min_Q_F < 0:
+            return None
+        train_domain = run_records[0]['args']['train_envs']
+        test_domain = run_records[0]['args']['test_envs']
+        assert len(train_domain) == 1 and len(test_domain) == 1
+        train_domain = train_domain[0]
+        test_domain = test_domain[0]
+        train_acc = f'env{train_domain}_in_acc'
+        test_acc = f'env{test_domain}_in_acc'
+
+        run_records = run_records.sorted(key=lambda x: x['step'])
+        variance = 0
+        window = deque([0] + [float(row[train_acc]) for row in run_records[:self.window_size-1]])
+        for i in range(self.window_size, len(run_records)):
+            window.popleft()
+            window.append(float(run_records[i][train_acc]))
+            mean = sum(window) / len(window)
+            variance = sqrt(sum([(a - mean)**2 for a in window]) / (len(window) - 1))
+            run_records[i]['variance'] = variance
+            run_records[i]['min_in_window'] = min(window)
+        
+        for i in range(self.window_size):
+            run_records[i]['variance'] = 1 # 舍弃前几个 record
+            run_records[i]['min_in_window'] = 0
+        fluctuation = 0
+        run_records[0]['fluctuation'] = 1
+        for i in range(1, len(run_records)):
+            fluctuation = self.beta * fluctuation + (1 - self.beta) * abs(run_records[i][train_acc] - run_records[i-1][train_acc])
+            run_records[i]['fluctuation'] = fluctuation
+
+        selected: dict = (
+            run_records
+            .filter(lambda x: x[train_acc] >= 0.95)
+            # .filter(lambda x: x['variance'] <= 0.05)
+            # .filter(lambda x: x['fluctuation'] <= 0.05)
+            .filter(lambda x: x['min_in_window'] >= 0.90)
+            # .filter(lambda x: x['heat']['Q_F'] + x['heat']['Q_0'] >= 5)
+            .sorted(key=lambda x: x['n_inductive_bias_difference'])[-1]
+        )
+        distortions = selected['distortions']
+        return {
+            'val_acc': - sum(distortions) / len(distortions) if len(distortions) > 0 else 0,
+            'test_acc': selected[test_acc],
+            'etc': {
+                'difference': selected['n_inductive_bias_difference'],
+                'heat': selected['heat']['Q_F'] + selected['heat']['Q_0'],
+                'step': selected['step']
+            }
+        }
+    @classmethod
+    def sweep_acc(self, records):
+        if records[0]['args']['algorithm'] != 'InformationalHeat':
+            return None
+        else:
+            return super().sweep_acc(records)
+
+    @classmethod
+    def hparams_accs(self, records):
+        """
+        Given all records from a single (dataset, algorithm, test env) pair,
+        return a sorted list of (run_acc, records) tuples.
+        """
+        res = (records.group('args.hparams_seed')
+            .map(lambda _, run_records:
+                (
+                    self.run_acc(run_records),
+                    run_records
+                )
+            ).filter(lambda x: x[0] is not None)
+            .sorted(key=lambda x: x[0]['val_acc'])[::-1]
+        )
+
+        print(res[0][1][0]['args']['hparams_seed'], res[0][0])
+        return res
