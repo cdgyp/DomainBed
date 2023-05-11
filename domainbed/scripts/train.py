@@ -79,7 +79,7 @@ if __name__ == "__main__" or True:
         print('\t{}: {}'.format(k, v))
 
     if args.hparams_seed == 0:
-        hparams = hparams_registry.default_hparams(args.algorithm, args.dataset, args.log_dir)
+        hparams = hparams_registry.default_hparams(args.algorithm, args.dataset)
     else:
         hparams = hparams_registry.random_hparams(args.algorithm, args.dataset,
             misc.seed_hash(args.hparams_seed, args.trial_seed))

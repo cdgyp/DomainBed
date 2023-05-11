@@ -250,6 +250,8 @@ class AbstractDANN(Algorithm):
         hparams['writer'] = None
 
     def update(self, minibatches, unlabeled=None):
+        if self.conditional:    unlabeled = None
+        
         device = minibatches[0][0].device
         self.update_count += 1
         self.step += 1
