@@ -54,6 +54,8 @@ if __name__ == "__main__" or True:
     parser.add_argument('--device', type=str, default='cpu')
     parser.add_argument('--batch_size', type=int, default=None)
     parser.add_argument('--featurizer', type=str, default='CNN', choices=['CNN', 'ViT'])
+    parser.add_argument('--no_average', action='store_true',
+        help='Do not average statistics records but pick the last one. Automatically true when algorithm is InformationalHeat')
     args = parser.parse_args()
 
     # If we ever want to implement checkpointing, just persist these values
@@ -88,6 +90,9 @@ if __name__ == "__main__" or True:
     if args.batch_size:
         hparams['batch_size'] = args.batch_size
     hparams['featurizer'] = args.featurizer
+    if args.algorithm == 'InformationalHeat':
+        args.task = 'domain_adaptation'
+        args.no_average = True
 
     # start_tensorboard_server(hparams['writer'].get_logdir())
     hparams['writer'] = None
@@ -235,7 +240,10 @@ if __name__ == "__main__" or True:
             }
 
             for key, val in checkpoint_vals.items():
-                results[key] = np.mean(val)
+                if args.no_average:
+                    results[key] = val[-1]
+                else:
+                    results[key] = np.mean(val)
 
             evals = zip(eval_loader_names, eval_loaders, eval_weights)
             for name, loader, weights in evals:

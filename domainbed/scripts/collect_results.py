@@ -181,9 +181,16 @@ def print_results_tables(records, selection_method, latex, show_traces):
         for i, algorithm in enumerate(alg_names):
             for j, dataset in enumerate(dataset_names):
                 trace = []
+                seeds = None
                 for r in records:
                     if r['args']['algorithm'] == algorithm and r['args']['dataset'] == dataset:
                         r: dict
+                        args = r['args']
+                        current_seeds = args['seed'], args['trial_seed'], args['hparams_seed']
+                        if seeds is None:
+                            seeds = current_seeds
+                        if seeds != current_seeds:
+                            continue
                         def get_env_id(key: str):
                             id_str = key[key.find('v')+1:]
                             id_str = id_str[:id_str.find('_')]
@@ -228,6 +235,7 @@ if __name__ == "__main__":
         model_selection.LeaveOneOutSelectionMethod,
         model_selection.InformationHeatSelectionMethod,
         model_selection.OracleSelectionMethod,
+        model_selection.OracleAllSelectionMethod,
     ]
 
     for selection_method in SELECTION_METHODS:

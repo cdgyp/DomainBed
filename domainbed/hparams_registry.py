@@ -141,6 +141,17 @@ def _hparams(algorithm, dataset, random_seed):
         _hparam('eqrm_quantile', 0.75, lambda r: r.uniform(0.5, 0.99))
         _hparam('eqrm_burnin_iters', 2500, lambda r: 10 ** r.uniform(2.5, 3.5))
         _hparam('eqrm_lr', 1e-6, lambda r: 10 ** r.uniform(-7, -5))
+    elif algorithm == 'InformationalHeat':
+        _hparam('depth', 5, lambda r: 5)
+        _hparam('weight_heat', 1e-6, lambda r: 10 ** r.uniform(-7, -3))
+        _hparam('n_cls', 8, lambda r: 8)
+        _hparam('weight_single', 1e0, lambda r: 10 ** r.uniform(-2, 2))
+        _hparam('alpha', 1e2, lambda r: 10 ** r.uniform(1, 3))
+        _hparam('weight_confidence', 0, lambda r: 0)
+        _hparam('D', 1000, lambda r: 1000)
+        _hparam('weight_distortion', 1e1, lambda r: 10 ** r.uniform(0, 2))
+        _hparam('wasserstein_clip', 1e-3, lambda r: 10 ** r.uniform(-4, -2))
+
 
 
     # Dataset-and-algorithm-specific hparam definitions. Each block of code
@@ -154,7 +165,10 @@ def _hparams(algorithm, dataset, random_seed):
     if dataset in SMALL_IMAGES:
         _hparam('weight_decay', 0., lambda r: 0.)
     else:
-        _hparam('weight_decay', 0., lambda r: 10**r.uniform(-6, -2))
+        if algorithm == 'InformationalHeat':
+            _hparam('weight_decay', 0.0, lambda r: 0.0)
+        else:
+            _hparam('weight_decay', 0., lambda r: 10**r.uniform(-6, -2))
 
     if dataset in SMALL_IMAGES:
         _hparam('batch_size', 64, lambda r: int(2**r.uniform(3, 9)))
@@ -169,11 +183,15 @@ def _hparams(algorithm, dataset, random_seed):
         _hparam('lr_g', 1e-3, lambda r: 10**r.uniform(-4.5, -2.5))
     elif algorithm in ['DANN', 'CDANN']:
         _hparam('lr_g', 5e-5, lambda r: 10**r.uniform(-5, -3.5))
+    elif algorithm in ['InformationalHeat']:
+        _hparam('lr_g', 1e-4, lambda r: 10**r.uniform(-5, -3))
 
     if algorithm in ['DANN', 'CDANN'] and dataset in SMALL_IMAGES:
         _hparam('lr_d', 1e-3, lambda r: 10**r.uniform(-4.5, -2.5))
     elif algorithm in ['DANN', 'CDANN']:
         _hparam('lr_d', 5e-5, lambda r: 10**r.uniform(-5, -3.5))
+    elif algorithm in ['InformationalHeat']:
+        _hparam('lr_d', 1e-3, lambda r: 10**r.uniform(-4, -2))
 
     if algorithm in ['DANN', 'CDANN'] and dataset in SMALL_IMAGES:
         _hparam('weight_decay_g', 0., lambda r: 0.)

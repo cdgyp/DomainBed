@@ -23,6 +23,7 @@ from .lib.misc import (
 )
 
 
+
 ALGORITHMS = [
     'ERM',
     'Fish',
@@ -54,6 +55,7 @@ ALGORITHMS = [
     'CausIRL_CORAL',
     'CausIRL_MMD',
     'EQRM',
+    'InformationalHeat',
 ]
 
 def get_algorithm_class(algorithm_name):
@@ -988,7 +990,7 @@ class ANDMask(ERM):
             env_loss = F.cross_entropy(logits, y)
             mean_loss += env_loss.item() / len(minibatches)
 
-            env_grads = autograd.grad(env_loss, self.network.parameters())
+            env_grads = autograd.grad(env_loss, self.network.parameters(), allow_unused=True)
             for grads, env_grad in zip(param_gradients, env_grads):
                 grads.append(env_grad)
 
@@ -1001,6 +1003,8 @@ class ANDMask(ERM):
     def mask_grads(self, tau, gradients, params):
 
         for param, grads in zip(params, gradients):
+            if grads is None or grads[0] is None:
+                continue
             grads = torch.stack(grads, dim=0)
             grad_signs = torch.sign(grads)
             mask = torch.mean(grad_signs, dim=0).abs() >= self.tau
@@ -1174,7 +1178,7 @@ class SANDMask(ERM):
 
             env_loss = F.cross_entropy(logits, y)
             mean_loss += env_loss.item() / len(minibatches)
-            env_grads = autograd.grad(env_loss, self.network.parameters(), retain_graph=True)
+            env_grads = autograd.grad(env_loss, self.network.parameters(), retain_graph=True, allow_unused=True)
             for grads, env_grad in zip(param_gradients, env_grads):
                 grads.append(env_grad)
 
@@ -1193,6 +1197,8 @@ class SANDMask(ERM):
         '''
         device = gradients[0][0].device
         for param, grads in zip(params, gradients):
+            if grads is None or grads[0] is None:
+                continue
             grads = torch.stack(grads, dim=0)
             avg_grad = torch.mean(grads, dim=0)
             grad_signs = torch.sign(grads)
@@ -2051,3 +2057,134 @@ class EQRM(ERM):
         self.update_count += 1
 
         return {'loss': loss.item()}
+
+from .... import (
+    model, 
+    abstraction, 
+    attention,
+    attention_memory, 
+    erm, 
+    heat, 
+    discrete_rate_distortion, 
+    inference,
+)
+from .....algorithms import training
+
+class InformationalHeat(Algorithm):
+    def __init__(self, input_shape, num_classes, num_domains, hparams):
+        super().__init__(input_shape, num_classes, num_domains, hparams)
+        
+        heads=12
+        dim=768
+        mlp_dim=3072
+        depth=5
+        patch_size=16
+        n_key=768
+
+
+        n_query = 256
+        attention_args= {
+            'k': 1,
+            'n_query': n_query,
+            'uncaptured_dot_loss_weight': hparams['weight_single'],
+        }
+
+        self.model = model.Model(
+            attention.ViT(
+                image_size=input_shape[1:],
+                patch_size=patch_size,
+                num_classes=num_classes,
+                dim=dim,
+                depth=depth,
+                heads=heads,
+                mlp_dim=mlp_dim,
+                attention_type=attention.ShannonTop1Attention,
+                max_token=n_query,
+                dropout=hparams['resnet_dropout'],
+                dim_head=mlp_dim // heads,
+                pool='none',
+                attention_args=attention_args,
+                skip_connection=True,
+                n_cls=hparams['n_cls']
+            ),
+            inference.InferencePlugin(n_inductive_bias=hparams['n_cls'], pool='max_bias', skip_connection=True),
+            erm.ERM(),
+            attention_memory.AttentionMemoryPlugin(has_residual=False),
+            # LocalSimplicityPlugin(
+                # max_n_token=max(n_query, 16, (image_size // patch_size)**2),
+                # n_inductive_bias=args.n_inductive_bias,
+                # n_class=n_class,
+                # exchange_block_size=exchange_block_size,
+                # total_layer=depth + 1,
+                # dim=dim,
+                # heads=heads_simplicity,
+                # mlp_dim=mlp_dim_simplicity,
+                # dim_head=mlp_dim_simplicity//heads_simplicity,
+                # weight=args.weight_local_simplicity
+            # ),
+            discrete_rate_distortion.DiscreteRateDistortionPlugin(
+                D=hparams['D'], 
+                dim_input=(heads * 1 + 2) * dim, dim_output=dim, n_key=n_key, n_domain=12, depth_mlp=3, dim_mlp=512, beta=0.5, lr=hparams['lr_g'] * 10,
+                weight_distortion=hparams['weight_distortion'],
+                weight_heat=hparams['weight_heat']
+            ),
+            erm.Confidence(weight=hparams['weight_confidence']),
+            abstraction.AdversarialAbstraction(
+                n_domain=2,
+                dim=dim,
+                n_heads=heads,
+                k=1,
+                weight=1e1,
+                abstraction_per_update=0,
+                alpha=hparams['alpha'],
+                lr=hparams['lr_d'],
+                loss_fn=abstraction.WassersteinLoss(c=hparams['wasserstein_clip']),
+            ),
+        )
+
+        self.trainer = training.Training(
+            0, 
+            self.model, 
+            [0]*15, 
+            hparams['lr_g'],
+            writer=None, 
+            test_every_epoch=None,
+            test_batch=None,
+            save_every_epoch=None,
+            weight_decay=hparams['weight_decay'],
+            optimizer='Adam',
+            scheduler=True
+        )
+
+        self.num_domains = num_domains
+        self.trainer._init_training()
+        self.model.iteration = 0
+        self.model.epoch = 0
+
+    def update(self, minibatches, unlabeled=None):
+        x, y = minibatches[0]
+        assert unlabeled is not None
+        unlabeled = unlabeled[0]
+        unlabeled_Y = torch.zeros([len(unlabeled)], device=unlabeled.device, dtype=torch.long)
+        X, Y = torch.cat([x, unlabeled]), torch.cat([y, unlabeled_Y])
+        D = torch.cat([torch.full([len(x)], fill_value=0, device=x.device, dtype=torch.long), torch.full([len(unlabeled)], fill_value=1, device=unlabeled.device, dtype=torch.long)])
+        labeled = torch.cat([torch.full([len(x)], fill_value=True, device=x.device, dtype=torch.bool), torch.full([len(x)], fill_value=False, device=x.device, dtype=torch.bool)])
+
+        losses = self.trainer._train_batch(X, Y, D, labeled)
+        self.model.iteration = self.model.iteration + 1
+
+        losses = {key: float(value) for key, value in losses.items()}
+        return {
+            'n_inductive_bias_difference': losses['n_inductive_bias/difference'],
+            'distortions': [value for key, value in losses.items() if 'distortion' in key],
+            'heat': {
+                'Q_F': losses['heat/Q_F'],
+                'Q_0': losses['heat/Q_0']
+            }
+        }
+
+
+    def predict(self, x):
+        self.model.eval()
+        return self.model(x, None, None, None, test_mode=True)
+

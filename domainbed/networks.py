@@ -188,7 +188,7 @@ class WrappedViT(nn.Module):
         def __call__(self, module, input):
             self.feature = input[0]
 
-    def __init__(self, image_size):
+    def __init__(self, image_size, channels=3):
         super().__init__()
         self.vit = ViT(
             image_size=image_size,
@@ -198,6 +198,7 @@ class WrappedViT(nn.Module):
             heads=12,
             depth=12,
             mlp_dim=3072,
+            channels=channels
         )
         self.n_outputs = 768
         self.hook = self.Hook()
@@ -211,6 +212,7 @@ class WrappedViT(nn.Module):
 
 
 def Featurizer(input_shape, hparams):
+    print(input_shape)
     """Auto-select an appropriate featurizer for the given input shape."""
     if len(input_shape) == 1:
         return MLP(input_shape[0], hparams["mlp_width"], hparams)
@@ -222,7 +224,7 @@ def Featurizer(input_shape, hparams):
         if hparams['featurizer'] == 'CNN':
             return ResNet(input_shape, hparams)
         elif hparams['featurizer'] == 'ViT':
-            return WrappedViT(input_shape[1:3])
+            return WrappedViT(input_shape[1:3], channels=input_shape[0])
         else:
             raise NotImplementedError
     else:

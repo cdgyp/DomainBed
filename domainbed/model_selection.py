@@ -75,6 +75,29 @@ class OracleSelectionMethod(SelectionMethod):
             'test_acc': chosen_record[test_in_acc_key]
         }
 
+class OracleAllSelectionMethod(SelectionMethod):
+    """Like Selection method which picks argmax(test_out_acc) across all hparams
+    and checkpoints, but instead of taking the argmax over all
+    checkpoints, we pick the last checkpoint, i.e. no early stopping."""
+    name = "test-domain validation set (oracle)"
+
+    @classmethod
+    def run_acc(self, run_records):
+        run_records = run_records.filter(lambda r:
+            len(r['args']['test_envs']) == 1)
+        if not len(run_records):
+            return None
+        test_env = run_records[0]['args']['test_envs'][0]
+        test_out_acc_key = 'env{}_out_acc'.format(test_env)
+        test_in_acc_key = 'env{}_in_acc'.format(test_env)
+        chosen_record = run_records.sorted(lambda r: r['step'])[-1]
+        chosen_record = run_records.sorted(lambda r: r[test_in_acc_key])[-1]
+        return {
+            'val_acc':  chosen_record[test_out_acc_key],
+            'test_acc': chosen_record[test_in_acc_key]
+        }
+
+
 class IIDAccuracySelectionMethod(SelectionMethod):
     """Picks argmax(mean(env_out_acc for env in train_envs))"""
     name = "training-domain validation set"
