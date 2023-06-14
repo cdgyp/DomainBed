@@ -163,6 +163,10 @@ if __name__ == "__main__" or True:
         num_workers=dataset.N_WORKERS)
         for i, (env, env_weights) in enumerate(in_splits)
         if i not in args.test_envs and (args.task != 'domain_adaptation' or i in args.train_envs)]
+    
+    train_datasets = [env
+        for i, (env, env_weights) in enumerate(in_splits)
+        if i not in args.test_envs and (args.task != 'domain_adaptation' or i in args.train_envs)]
 
     uda_loaders = [InfiniteDataLoader(
         dataset=env,
@@ -193,6 +197,8 @@ if __name__ == "__main__" or True:
         algorithm.load_state_dict(algorithm_dict)
 
     algorithm.to(device)
+    if isinstance(algorithm, algorithms.DatasetRequiringAlgorithm):
+        algorithm.set_datasets(train_datasets)
 
     train_minibatches_iterator = zip(*train_loaders)
     uda_minibatches_iterator = zip(*uda_loaders)

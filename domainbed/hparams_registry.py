@@ -151,6 +151,13 @@ def _hparams(algorithm, dataset, random_seed):
         _hparam('D', 1000, lambda r: 1000)
         _hparam('weight_distortion', 1e1, lambda r: 10 ** r.uniform(0, 2))
         _hparam('wasserstein_clip', 1e-3, lambda r: 10 ** r.uniform(-4, -2))
+    elif 'ISR' in algorithm:
+        _hparam('backbone', 'GroupDRO', lambda r: 'GroupDRO')
+        if 'Mean' in algorithm:
+            _hparam('d_spu_ratio', -1, lambda r: -1)
+        else:
+            assert 'Cov' in algorithm
+            _hparam('d_spu_ratio', 0.5, lambda r: r.uniform(0.1, 0.8))
 
 
 

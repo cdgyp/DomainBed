@@ -2188,3 +2188,98 @@ class InformationalHeat(Algorithm):
         self.model.eval()
         return self.model(x, None, None, None, test_mode=True)
 
+from torch.utils.data import Dataset, DataLoader
+class DatasetRequiringAlgorithm(Algorithm):
+    def set_datasets(self, datasets: 'list[Dataset]'):
+        self.datasets = datasets
+
+"""
+    Invariant Subspace Recovery
+
+    only ERM- or GroupDRO-trained backbones are supported
+
+    @misc{wang_provable_2022,
+        title = {Provable Domain Generalization via Invariant-Feature Subspace Recovery},
+        url = {http://arxiv.org/abs/2201.12919},
+        number = {{arXiv}:2201.12919},
+        publisher = {{arXiv}},
+        author = {Wang, Haoxiang and Si, Haozhe and Li, Bo and Zhao, Han},
+        urldate = {2023-06-13},
+        date = {2022-07-07},
+        langid = {english},
+        eprinttype = {arxiv},
+        eprint = {2201.12919 [cs, stat]},
+        keywords = {Computer Science - Machine Learning, Statistics - Machine Learning},
+    }
+
+"""
+from baselines.ISR.real_datasets import isr
+class AbstractISR(DatasetRequiringAlgorithm):
+    def __init__(self, version, input_shape, num_classes, num_domains, hparams):
+        super().__init__(input_shape, num_classes, num_domains, hparams)
+
+        if hparams['backbone'] == 'GroupDRO':
+            self.backbone = GroupDRO(input_shape, num_classes, num_domains, hparams)
+        elif hparams['backbone'] == 'ERM':
+            self.backbone = ERM(input_shape, num_classes, num_domains, hparams)
+        else:
+            raise NotImplemented(hparams['backbone'])
+        self.isr_classifier = isr.ISRClassifier(
+            version, 
+            d_spu= int(hparams['d_spu_ratio'] * self.backbone.featurizer.n_outputs) if hparams('d_spu_ratio') >= 0 else -1
+        )
+
+        self.features = None
+        self.labels = None
+        self.envs = None
+        self.is_classifier_latest = False
+    
+    def update(self, minibatches, unlabeled=None):
+        self.is_classifier_latest = False
+        self.features = None
+        self.labels = None,
+        self.envs = None
+        return self.backbone.update(minibatches, unlabeled)
+    
+    def parse_feature(self):
+        self.features = []
+        self.labels = []
+        self.envs = []
+        with torch.no_grad():
+            for env, dataset in self.datasets:
+                dl = DataLoader(dataset, 256, False)
+                for X, Y in dl:
+                    self.features.append(self.backbone.featurizer(X))
+                    self.lables.append(Y)
+                self.envs.append(torch.full([len(Y)], env, device=self.features[-1].device))
+            self.features = torch.cat(self.features, dim=0)
+            self.labels = torch.cat(self.labels, dim=0)
+            self.envs = torch.cat(self.envs, dim=0)
+            assert len(self.features.shape) == 2, self.features.shape
+            assert len(self.labels.shape) == 1, self.labels.shape
+            assert len(self.envs) == 1, self.envs.shape
+
+
+    def fit(self):
+        self.isr_classifier.fit(self.features, self.labels, self.classifier, chosen_class=0)
+        self.is_classifier_latest = True
+        self.features = None
+        self.labels = None,
+        self.envs = None
+
+    def predict(self, x):
+        if not self.is_classifier_latest:
+            self.parse_feature()
+            self.fit()
+        
+        return self.isr_classifier(x)
+
+
+class ISR_Mean(AbstractISR):
+     def __init__(self, input_shape, num_classes, num_domains, hparams):
+         super().__init__("mean", input_shape, num_classes, num_domains, hparams)
+
+class ISR_Mean(AbstractISR):
+     def __init__(self, input_shape, num_classes, num_domains, hparams):
+         super().__init__("cov", input_shape, num_classes, num_domains, hparams)
+
