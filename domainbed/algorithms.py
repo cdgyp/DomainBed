@@ -2188,10 +2188,10 @@ class EQRM(ERM):
         # self.model.eval()
         # return self.model(x, None, None, None, test_mode=True)
 
-# from torch.utils.data import Dataset, DataLoader
-# class DatasetRequiringAlgorithm(Algorithm):
-    # def set_datasets(self, datasets: 'list[Dataset]'):
-        # self.datasets = datasets
+from torch.utils.data import Dataset, DataLoader
+class DatasetRequiringAlgorithm(Algorithm):
+    def set_datasets(self, datasets: 'list[Dataset]'):
+        self.datasets = datasets
 
 # """
     # Invariant Subspace Recovery
