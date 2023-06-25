@@ -2058,343 +2058,340 @@ class EQRM(ERM):
 
         return {'loss': loss.item()}
 
-# from .... import (
-    # model, 
-    # abstraction, 
-    # attention,
-    # attention_memory, 
-    # erm, 
-    # heat, 
-    # discrete_rate_distortion, 
-    # inference,
-# )
-# from .....algorithms import training
+from .... import (
+    model, 
+    abstraction, 
+    attention,
+    attention_memory, 
+    erm, 
+    heat, 
+    discrete_rate_distortion, 
+    inference,
+)
+from .....algorithms import training
 
-# class InformationalHeat(Algorithm):
-    # def __init__(self, input_shape, num_classes, num_domains, hparams):
-        # super().__init__(input_shape, num_classes, num_domains, hparams)
+class InformationalHeat(Algorithm):
+    def __init__(self, input_shape, num_classes, num_domains, hparams):
+        super().__init__(input_shape, num_classes, num_domains, hparams)
         
-        # heads=12
-        # dim=768
-        # mlp_dim=3072
-        # depth=5
-        # patch_size=16
-        # n_key=768
+        heads=12
+        dim=768
+        mlp_dim=3072
+        depth=5
+        patch_size=16
+        n_key=768
 
 
-        # n_query = 256
-        # attention_args= {
-            # 'k': 1,
-            # 'n_query': n_query,
-            # 'uncaptured_dot_loss_weight': hparams['weight_single'],
-        # }
+        n_query = 256
+        attention_args= {
+            'k': 1,
+            'n_query': n_query,
+            'uncaptured_dot_loss_weight': hparams['weight_single'],
+        }
 
-        # self.model = model.Model(
-            # attention.ViT(
-                # image_size=input_shape[1:],
-                # patch_size=patch_size,
-                # num_classes=num_classes,
+        self.model = model.Model(
+            attention.ViT(
+                image_size=input_shape[1:],
+                patch_size=patch_size,
+                num_classes=num_classes,
+                dim=dim,
+                depth=depth,
+                heads=heads,
+                mlp_dim=mlp_dim,
+                attention_type=attention.ShannonTop1Attention,
+                max_token=n_query,
+                dropout=hparams['resnet_dropout'],
+                dim_head=mlp_dim // heads,
+                pool='none',
+                attention_args=attention_args,
+                skip_connection=True,
+                n_cls=hparams['n_cls']
+            ),
+            inference.InferencePlugin(n_inductive_bias=hparams['n_cls'], pool='max_bias', skip_connection=True),
+            erm.ERM(),
+            attention_memory.AttentionMemoryPlugin(has_residual=False),
+            # LocalSimplicityPlugin(
+                # max_n_token=max(n_query, 16, (image_size // patch_size)**2),
+                # n_inductive_bias=args.n_inductive_bias,
+                # n_class=n_class,
+                # exchange_block_size=exchange_block_size,
+                # total_layer=depth + 1,
                 # dim=dim,
-                # depth=depth,
-                # heads=heads,
-                # mlp_dim=mlp_dim,
-                # attention_type=attention.ShannonTop1Attention,
-                # max_token=n_query,
-                # dropout=hparams['resnet_dropout'],
-                # dim_head=mlp_dim // heads,
-                # pool='none',
-                # attention_args=attention_args,
-                # skip_connection=True,
-                # n_cls=hparams['n_cls']
+                # heads=heads_simplicity,
+                # mlp_dim=mlp_dim_simplicity,
+                # dim_head=mlp_dim_simplicity//heads_simplicity,
+                # weight=args.weight_local_simplicity
             # ),
-            # inference.InferencePlugin(n_inductive_bias=hparams['n_cls'], pool='max_bias', skip_connection=True),
-            # erm.ERM(),
-            # attention_memory.AttentionMemoryPlugin(has_residual=False),
-            # # LocalSimplicityPlugin(
-                # # max_n_token=max(n_query, 16, (image_size // patch_size)**2),
-                # # n_inductive_bias=args.n_inductive_bias,
-                # # n_class=n_class,
-                # # exchange_block_size=exchange_block_size,
-                # # total_layer=depth + 1,
-                # # dim=dim,
-                # # heads=heads_simplicity,
-                # # mlp_dim=mlp_dim_simplicity,
-                # # dim_head=mlp_dim_simplicity//heads_simplicity,
-                # # weight=args.weight_local_simplicity
-            # # ),
-            # discrete_rate_distortion.DiscreteRateDistortionPlugin(
-                # D=hparams['D'], 
-                # dim_input=(heads * 1 + 2) * dim, dim_output=dim, n_key=n_key, n_domain=12, depth_mlp=3, dim_mlp=512, beta=0.5, lr=hparams['lr_g'] * 10,
-                # weight_distortion=hparams['weight_distortion'],
-                # weight_heat=hparams['weight_heat']
-            # ),
-            # erm.Confidence(weight=hparams['weight_confidence']),
-            # abstraction.AdversarialAbstraction(
-                # n_domain=2,
-                # dim=dim,
-                # n_heads=heads,
-                # k=1,
-                # weight=1e1,
-                # abstraction_per_update=0,
-                # alpha=hparams['alpha'],
-                # lr=hparams['lr_d'],
-                # loss_fn=abstraction.WassersteinLoss(c=hparams['wasserstein_clip']),
-            # ),
-        # )
+            discrete_rate_distortion.DiscreteRateDistortionPlugin(
+                D=hparams['D'], 
+                dim_input=(heads * 1 + 2) * dim, dim_output=dim, n_key=n_key, n_domain=12, depth_mlp=3, dim_mlp=512, beta=0.5, lr=hparams['lr_g'] * 10,
+                weight_distortion=hparams['weight_distortion'],
+                weight_heat=hparams['weight_heat']
+            ),
+            erm.Confidence(weight=hparams['weight_confidence']),
+            abstraction.AdversarialAbstraction(
+                n_domain=2,
+                dim=dim,
+                n_heads=heads,
+                k=1,
+                weight=1e1,
+                abstraction_per_update=0,
+                alpha=hparams['alpha'],
+                lr=hparams['lr_d'],
+                loss_fn=abstraction.WassersteinLoss(c=hparams['wasserstein_clip']),
+            ),
+        )
 
-        # self.trainer = training.Training(
-            # 0, 
-            # self.model, 
-            # [0]*15, 
-            # hparams['lr_g'],
-            # writer=None, 
-            # test_every_epoch=None,
-            # test_batch=None,
-            # save_every_epoch=None,
-            # weight_decay=hparams['weight_decay'],
-            # optimizer='Adam',
-            # scheduler=True
-        # )
+        self.trainer = training.Training(
+            0, 
+            self.model, 
+            [0]*15, 
+            hparams['lr_g'],
+            writer=None, 
+            test_every_epoch=None,
+            test_batch=None,
+            save_every_epoch=None,
+            weight_decay=hparams['weight_decay'],
+            optimizer='Adam',
+            scheduler=True
+        )
 
-        # self.num_domains = num_domains
-        # self.trainer._init_training()
-        # self.model.iteration = 0
-        # self.model.epoch = 0
+        self.num_domains = num_domains
+        self.trainer._init_training()
+        self.model.iteration = 0
+        self.model.epoch = 0
 
-    # def update(self, minibatches, unlabeled=None):
-        # x, y = minibatches[0]
-        # assert unlabeled is not None
-        # unlabeled = unlabeled[0]
-        # unlabeled_Y = torch.zeros([len(unlabeled)], device=unlabeled.device, dtype=torch.long)
-        # X, Y = torch.cat([x, unlabeled]), torch.cat([y, unlabeled_Y])
-        # D = torch.cat([torch.full([len(x)], fill_value=0, device=x.device, dtype=torch.long), torch.full([len(unlabeled)], fill_value=1, device=unlabeled.device, dtype=torch.long)])
-        # labeled = torch.cat([torch.full([len(x)], fill_value=True, device=x.device, dtype=torch.bool), torch.full([len(x)], fill_value=False, device=x.device, dtype=torch.bool)])
+    def update(self, minibatches, unlabeled=None):
+        x, y = minibatches[0]
+        assert unlabeled is not None
+        unlabeled = unlabeled[0]
+        unlabeled_Y = torch.zeros([len(unlabeled)], device=unlabeled.device, dtype=torch.long)
+        X, Y = torch.cat([x, unlabeled]), torch.cat([y, unlabeled_Y])
+        D = torch.cat([torch.full([len(x)], fill_value=0, device=x.device, dtype=torch.long), torch.full([len(unlabeled)], fill_value=1, device=unlabeled.device, dtype=torch.long)])
+        labeled = torch.cat([torch.full([len(x)], fill_value=True, device=x.device, dtype=torch.bool), torch.full([len(x)], fill_value=False, device=x.device, dtype=torch.bool)])
 
-        # losses = self.trainer._train_batch(X, Y, D, labeled)
-        # self.model.iteration = self.model.iteration + 1
+        losses = self.trainer._train_batch(X, Y, D, labeled)
+        self.model.iteration = self.model.iteration + 1
 
-        # losses = {key: float(value) for key, value in losses.items()}
-        # return {
-            # 'n_inductive_bias_difference': losses['n_inductive_bias/difference'],
-            # 'distortions': [value for key, value in losses.items() if 'distortion' in key],
-            # 'heat': {
-                # 'Q_F': losses['heat/Q_F'],
-                # 'Q_0': losses['heat/Q_0']
-            # }
-        # }
+        losses = {key: float(value) for key, value in losses.items()}
+        return {
+            'n_inductive_bias_difference': losses['n_inductive_bias/difference'],
+            'distortions': [value for key, value in losses.items() if 'distortion' in key],
+            'heat': {
+                'Q_F': losses['heat/Q_F'],
+                'Q_0': losses['heat/Q_0']
+            }
+        }
 
 
-    # def predict(self, x):
-        # self.model.eval()
-        # return self.model(x, None, None, None, test_mode=True)
+    def predict(self, x):
+        self.model.eval()
+        return self.model(x, None, None, None, test_mode=True)
 
 from torch.utils.data import Dataset, DataLoader
 class DatasetRequiringAlgorithm(Algorithm):
     def set_datasets(self, datasets: 'list[Dataset]'):
         self.datasets = datasets
 
-# """
-    # Invariant Subspace Recovery
+from baselines.ISR.real_datasets import isr
+class AbstractISR(DatasetRequiringAlgorithm):
+    """Invariant Subspace Recovery
 
-    # only ERM- or GroupDRO-trained backbones are supported
+        only ERM- or GroupDRO-trained backbones are supported
 
-    # @misc{wang_provable_2022,
-        # title = {Provable Domain Generalization via Invariant-Feature Subspace Recovery},
-        # url = {http://arxiv.org/abs/2201.12919},
-        # number = {{arXiv}:2201.12919},
-        # publisher = {{arXiv}},
-        # author = {Wang, Haoxiang and Si, Haozhe and Li, Bo and Zhao, Han},
-        # urldate = {2023-06-13},
-        # date = {2022-07-07},
-        # langid = {english},
-        # eprinttype = {arxiv},
-        # eprint = {2201.12919 [cs, stat]},
-        # keywords = {Computer Science - Machine Learning, Statistics - Machine Learning},
-    # }
+        @misc{wang_provable_2022,
+            title = {Provable Domain Generalization via Invariant-Feature Subspace Recovery},
+            url = {http://arxiv.org/abs/2201.12919},
+            number = {{arXiv}:2201.12919},
+            publisher = {{arXiv}},
+            author = {Wang, Haoxiang and Si, Haozhe and Li, Bo and Zhao, Han},
+            urldate = {2023-06-13},
+            date = {2022-07-07},
+            langid = {english},
+            eprinttype = {arxiv},
+            eprint = {2201.12919 [cs, stat]},
+            keywords = {Computer Science - Machine Learning, Statistics - Machine Learning},
+        }
 
-# """
-# from baselines.ISR.real_datasets import isr
-# class AbstractISR(DatasetRequiringAlgorithm):
-    # def __init__(self, version, input_shape, num_classes, num_domains, hparams):
-        # super().__init__(input_shape, num_classes, num_domains, hparams)
+    """
+    def __init__(self, version, input_shape, num_classes, num_domains, hparams):
+        super().__init__(input_shape, num_classes, num_domains, hparams)
 
-        # if hparams['backbone'] == 'GroupDRO':
-            # self.backbone = GroupDRO(input_shape, num_classes, num_domains, hparams)
-        # elif hparams['backbone'] == 'ERM':
-            # self.backbone = ERM(input_shape, num_classes, num_domains, hparams)
-        # else:
-            # raise NotImplemented(hparams['backbone'])
-        # self.isr_classifier = isr.ISRClassifier(
-            # version, 
-            # d_spu= int(hparams['d_spu_ratio'] * self.backbone.featurizer.n_outputs) if hparams('d_spu_ratio') >= 0 else -1
-        # )
+        if hparams['backbone'] == 'GroupDRO':
+            self.backbone = GroupDRO(input_shape, num_classes, num_domains, hparams)
+        elif hparams['backbone'] == 'ERM':
+            self.backbone = ERM(input_shape, num_classes, num_domains, hparams)
+        else:
+            raise NotImplemented(hparams['backbone'])
+        self.isr_classifier = isr.ISRClassifier(
+            version, 
+            d_spu= int(hparams['d_spu_ratio'] * self.backbone.featurizer.n_outputs) if hparams('d_spu_ratio') >= 0 else -1
+        )
 
-        # self.features = None
-        # self.labels = None
-        # self.envs = None
-        # self.is_classifier_latest = False
+        self.features = None
+        self.labels = None
+        self.envs = None
+        self.is_classifier_latest = False
     
-    # def update(self, minibatches, unlabeled=None):
-        # self.backbone.featurizer.train()
-        # self.is_classifier_latest = False
-        # self.features = None
-        # self.labels = None,
-        # self.envs = None
-        # return self.backbone.update(minibatches, unlabeled)
+    def update(self, minibatches, unlabeled=None):
+        self.backbone.featurizer.train()
+        self.is_classifier_latest = False
+        self.features = None
+        self.labels = None,
+        self.envs = None
+        return self.backbone.update(minibatches, unlabeled)
     
-    # def parse_feature(self):
-        # self.features = []
-        # self.labels = []
-        # self.envs = []
-        # self.backbone.featurizer.eval()
-        # with torch.no_grad():
-            # for env, dataset in self.datasets:
-                # dl = DataLoader(dataset, 256, False)
-                # for X, Y in dl:
-                    # self.features.append(self.backbone.featurizer(X))
-                    # self.lables.append(Y)
-                # self.envs.append(torch.full([len(Y)], env, device=self.features[-1].device))
-            # self.features = torch.cat(self.features, dim=0)
-            # self.labels = torch.cat(self.labels, dim=0)
-            # self.envs = torch.cat(self.envs, dim=0)
-            # assert len(self.features.shape) == 2, self.features.shape
-            # assert len(self.labels.shape) == 1, self.labels.shape
-            # assert len(self.envs) == 1, self.envs.shape
+    def parse_feature(self):
+        self.features = []
+        self.labels = []
+        self.envs = []
+        self.backbone.featurizer.eval()
+        with torch.no_grad():
+            for env, dataset in self.datasets:
+                dl = DataLoader(dataset, 256, False)
+                for X, Y in dl:
+                    self.features.append(self.backbone.featurizer(X))
+                    self.lables.append(Y)
+                self.envs.append(torch.full([len(Y)], env, device=self.features[-1].device))
+            self.features = torch.cat(self.features, dim=0)
+            self.labels = torch.cat(self.labels, dim=0)
+            self.envs = torch.cat(self.envs, dim=0)
+            assert len(self.features.shape) == 2, self.features.shape
+            assert len(self.labels.shape) == 1, self.labels.shape
+            assert len(self.envs) == 1, self.envs.shape
 
 
-    # def fit(self):
-        # self.isr_classifier.fit(self.features, self.labels, self.classifier, chosen_class=0)
-        # self.is_classifier_latest = True
-        # self.features = None
-        # self.labels = None,
-        # self.envs = None
+    def fit(self):
+        self.isr_classifier.fit(self.features, self.labels, self.classifier, chosen_class=0)
+        self.is_classifier_latest = True
+        self.features = None
+        self.labels = None,
+        self.envs = None
 
-    # def predict(self, x):
-        # if not self.is_classifier_latest:
-            # self.parse_feature()
-            # self.fit()
+    def predict(self, x):
+        if not self.is_classifier_latest:
+            self.parse_feature()
+            self.fit()
         
-        # return self.isr_classifier(x)
+        return self.isr_classifier(x)
 
 
-# class ISR_Mean(AbstractISR):
-     # def __init__(self, input_shape, num_classes, num_domains, hparams):
-         # super().__init__("mean", input_shape, num_classes, num_domains, hparams)
+class ISR_Mean(AbstractISR):
+     def __init__(self, input_shape, num_classes, num_domains, hparams):
+         super().__init__("mean", input_shape, num_classes, num_domains, hparams)
 
-# class ISR_Mean(AbstractISR):
-     # def __init__(self, input_shape, num_classes, num_domains, hparams):
-         # super().__init__("cov", input_shape, num_classes, num_domains, hparams)
-
-
-# """
-    # Causal Transportability for Recognition
-
-    # only SimCLR pretraining is supported
-
-    # @misc{mao_causal_2022,
-        # title = {Causal Transportability for Visual Recognition},
-        # url = {http://arxiv.org/abs/2204.12363},
-        # number = {{arXiv}:2204.12363},
-        # publisher = {{arXiv}},
-        # author = {Mao, Chengzhi and Xia, Kevin and Wang, James and Wang, Hao and Yang, Junfeng and Bareinboim, Elias and Vondrick, Carl},
-        # urldate = {2023-05-24},
-        # date = {2022-04-26},
-        # eprinttype = {arxiv},
-        # eprint = {2204.12363 [cs]},
-        # keywords = {Computer Science - Computer Vision and Pattern Recognition},
-    # }
-# """
+class ISR_Mean(AbstractISR):
+     def __init__(self, input_shape, num_classes, num_domains, hparams):
+         super().__init__("cov", input_shape, num_classes, num_domains, hparams)
 
 
-# import torch.nn.functional as nnf
-# class ShufflePatches(object):
-    # """
-        # https://stackoverflow.com/a/66963266
-    # """
-    # def __init__(self, patch_size):
-        # self.ps = patch_size
+import torch.nn.functional as nnf
+class ShufflePatches(object):
+    """
+        https://stackoverflow.com/a/66963266
+    """
+    def __init__(self, patch_size):
+        self.ps = patch_size
 
-    # def __call__(self, x):
-        # # divide the batch of images into non-overlapping patches
-        # u = nnf.unfold(x, kernel_size=self.ps, stride=self.ps, padding=0)
-        # # permute the patches of each image in the batch
-        # pu = torch.cat([b_[:, torch.randperm(b_.shape[-1])][None,...] for b_ in u], dim=0)
-        # # fold the permuted patches back together
-        # f = nnf.fold(pu, x.shape[-2:], kernel_size=self.ps, stride=self.ps, padding=0)
-        # return f
+    def __call__(self, x):
+        # divide the batch of images into non-overlapping patches
+        u = nnf.unfold(x, kernel_size=self.ps, stride=self.ps, padding=0)
+        # permute the patches of each image in the batch
+        pu = torch.cat([b_[:, torch.randperm(b_.shape[-1])][None,...] for b_ in u], dim=0)
+        # fold the permuted patches back together
+        f = nnf.fold(pu, x.shape[-2:], kernel_size=self.ps, stride=self.ps, padding=0)
+        return f
 
-# from torch.utils.data import ConcatDataset, RandomSampler, Subset
-# class CT4Recognition(DatasetRequiringAlgorithm):
-    # def __init__(self, input_shape, num_classes, num_domains, hparams):
-        # super().__init__(input_shape, num_classes, num_domains, hparams)
-        # self.featurizer = networks.Featurizer(input_shape, self.hparams)
+from torch.utils.data import ConcatDataset, RandomSampler, Subset
+class CT4Recognition(DatasetRequiringAlgorithm):
+    """Causal Transportability for Recognition
 
-        # x_prime_shape = 1
-        # for l in input_shape:
-            # x_prime_shape *= l
-        # self.classifier = networks.Classifier(
-            # self.featurizer.n_outputs + x_prime_shape,
-            # num_classes,
-            # self.hparams['nonlinear_classifier'])
+    only SimCLR pretraining is supported
 
-        # self.n_j = hparams['n_j']
-        # self.shuffle = ShufflePatches(16)
-        # self.num_classes = num_classes
+    @misc{mao_causal_2022,
+        title = {Causal Transportability for Visual Recognition},
+        url = {http://arxiv.org/abs/2204.12363},
+        number = {{arXiv}:2204.12363},
+        publisher = {{arXiv}},
+        author = {Mao, Chengzhi and Xia, Kevin and Wang, James and Wang, Hao and Yang, Junfeng and Bareinboim, Elias and Vondrick, Carl},
+        urldate = {2023-05-24},
+        date = {2022-04-26},
+        eprinttype = {arxiv},
+        eprint = {2204.12363 [cs]},
+        keywords = {Computer Science - Computer Vision and Pattern Recognition},
+    }
+    """
+    def __init__(self, input_shape, num_classes, num_domains, hparams):
+        super().__init__(input_shape, num_classes, num_domains, hparams)
+        self.featurizer = networks.Featurizer(input_shape, self.hparams)
 
-        # self.optimizer = torch.optim.Adam(
-            # self.network.parameters(),
-            # lr=self.hparams["lr"],
-            # weight_decay=self.hparams['weight_decay']
-        # )
+        x_prime_shape = 1
+        for l in input_shape:
+            x_prime_shape *= l
+        self.classifier = networks.Classifier(
+            self.featurizer.n_outputs + x_prime_shape,
+            num_classes,
+            self.hparams['nonlinear_classifier'])
 
-    # def build_dataloaders(self, b):
-        # dataset = ConcatDataset(self.datasets)
-        # sampler = RandomSampler(dataset, replacement=True)
-        # self.dataloader = DataLoader(dataset, batch_size=b, sampler=sampler, num_workers=8)
+        self.n_j = hparams['n_j']
+        self.shuffle = ShufflePatches(16)
+        self.num_classes = num_classes
 
-        # self.label_specific_dataloader = []
-        # labels = [label for _, label in dataset]
-        # assert max(labels) < self.num_classes, max(labels)
+        self.optimizer = torch.optim.Adam(
+            self.network.parameters(),
+            lr=self.hparams["lr"],
+            weight_decay=self.hparams['weight_decay']
+        )
 
-        # for y in range(self.num_classes):
-            # indices = [i for i, label in enumerate(labels) if label == y]
-            # filtered = Subset(dataset, indices)
-            # self.label_specific_dataloader.append(DataLoader(filtered, 1, True, num_workers=8))
+    def build_dataloaders(self, b):
+        dataset = ConcatDataset(self.datasets)
+        sampler = RandomSampler(dataset, replacement=True)
+        self.dataloader = DataLoader(dataset, batch_size=b, sampler=sampler, num_workers=8)
 
-    # def sample(self, b, ys=None):
-        # if not hasattr(self, 'dataloder') or self.dataloader is None or self.dataloader.batch_size != b:
-            # self.build_dataloaders(b)
+        self.label_specific_dataloader = []
+        labels = [label for _, label in dataset]
+        assert max(labels) < self.num_classes, max(labels)
 
-        # if ys is None:
-            # return next(iter(self.dataloader))[0]
-        # else:
-            # res = []
-            # for y in ys:
-                # res.append(next(iter(self.label_specific_dataloaders[y]))[0])
-            # res = torch.cat(res, dim=0)
-            # assert len(res.shape) == 4
-            # return res
+        for y in range(self.num_classes):
+            indices = [i for i, label in enumerate(labels) if label == y]
+            filtered = Subset(dataset, indices)
+            self.label_specific_dataloader.append(DataLoader(filtered, 1, True, num_workers=8))
 
-    # def corrupted(self, b, y=None):
-        # samples = self.sample(b, y)
-        # assert len(samples.shape) == 4, samples.shape # b c w h
-        # assert samples.shape[1] == 3, samples.shape
-        # return self.shuffle(samples)
+    def sample(self, b, ys=None):
+        if not hasattr(self, 'dataloder') or self.dataloader is None or self.dataloader.batch_size != b:
+            self.build_dataloaders(b)
+
+        if ys is None:
+            return next(iter(self.dataloader))[0]
+        else:
+            res = []
+            for y in ys:
+                res.append(next(iter(self.label_specific_dataloaders[y]))[0])
+            res = torch.cat(res, dim=0)
+            assert len(res.shape) == 4
+            return res
+
+    def corrupted(self, b, y=None):
+        samples = self.sample(b, y)
+        assert len(samples.shape) == 4, samples.shape # b c w h
+        assert samples.shape[1] == 3, samples.shape
+        return self.shuffle(samples)
             
-    # def joint(self, r, y=None):
-        # x_prime = self.corrupted(b=len(r))
-        # joint = torch.cat([r, x_prime], dim=1)
-        # assert len(joint.shape) == 2
-        # return joint
+    def joint(self, r, y=None):
+        x_prime = self.corrupted(b=len(r))
+        joint = torch.cat([r, x_prime], dim=1)
+        assert len(joint.shape) == 2
+        return joint
         
-    # def predict(self, x):
-        # r = self.featurizer(x)
-        # p_y = []
-        # for _ in range(self.n_j):
-            # logit = self.classifier(self.joint(r))
-            # p_y.append(torch.softmax(logit))
-        # torch.stack(p_y, dim=1)
-        # return p_y.mean(dim=1)
+    def predict(self, x):
+        r = self.featurizer(x)
+        p_y = []
+        for _ in range(self.n_j):
+            logit = self.classifier(self.joint(r))
+            p_y.append(torch.softmax(logit))
+        torch.stack(p_y, dim=1)
+        return p_y.mean(dim=1)
 
-    # def update(self, minibatches, unlabeled=None):
-        # raise NotImplemented()
+    def update(self, minibatches, unlabeled=None):
+        raise NotImplemented()
+
