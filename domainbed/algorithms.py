@@ -2394,4 +2394,106 @@ class CT4Recognition(DatasetRequiringAlgorithm):
 
     def update(self, minibatches, unlabeled=None):
         raise NotImplemented()
+from baselines.LaCIM.real_world.LaCIM_rho import LaCIM_rho
+class LaCIM(Algorithm):
+    """LaCIM
 
+        using LaCIM_rho because this version gives results in the paper according to LaCIM's `README.md`
+
+        @article{sun_recovering_nodate,
+            title = {Recovering Latent Causal Factor for Generalization to Distributional Shifts},
+            author = {Sun, Xinwei and Wu, Botong and Zheng, Xiangyu and Liu, Chang and Chen, Wei and Qin, Tao and Liu, Tie-Yan},
+            langid = {english},
+        }
+    """
+    def __init__(self, input_shape, num_classes, num_domains, hparams):
+        super().__init__(input_shape, num_classes, num_domains, hparams)
+        self.model = LaCIM_rho(
+            in_channel=3,
+            zs_dim=hparams['zs_dim'],
+            num_classes=num_classes,
+            total_env=num_domains,
+            decoder_type=1
+        )
+        # TODO: 使用 ResNet50 作为骨干网络
+
+        if not isinstance(input_shape, int) and len(input_shape) > 1:
+            assert len(input_shape) == 2
+            assert input_shape[0] == input_shape[1]
+            input_shape = input_shape[0]
+        self.image_size = input_shape
+
+        if hparams['optimizer'] == 'sgd':
+            self.optimizer = torch.optim.SGD(model.parameters(), lr=hparams['lr'], momentum=hparams['momentum'], weight_decay=hparams['weight_decay'])
+        else:
+            self.optimizer = torch.optim.Adam(model.parameters(), lr=hparams['lr'], weight_decay=hparams['weight_decay'])
+
+        self.hparams = hparams
+        
+    
+    def predict(self, x):
+        pred_y_init, pred_y = self.model(x, is_train=0, is_debug=1)
+        return pred_y
+    def VAE_loss(self, recon_x, x, mu, logvar):
+        """
+        pred_y: predicted y
+        recon_x: generating images
+        x: origin images
+        mu: latent mean
+        logvar: latent log variance
+        q_y_s: prior
+        beta: tradeoff params
+        """
+        x = x * 0.5 + 0.5
+        BCE = F.binary_cross_entropy(
+            recon_x.view(-1, 3 * self.input_shape ** 2), 
+            x.view(-1, 3 * self.input_shape ** 2),
+            reduction='mean'
+        )
+    
+        KLD = -0.5 * torch.mean(1 + logvar - mu ** 2 - logvar.exp())
+    
+        return BCE, KLD
+
+    def update(self, minibatches, unlabeled=None):
+        """
+            adapted from `train()` of `LaCIM/real_world/LaCIM_rho.py`
+        """
+        x = torch.cat([x for x, y in minibatches])
+        target = torch.cat([y for x, y in minibatches])
+        env = torch.cat([torch.full_like(y, i) for i, (x, y) in enumerate(minibatches)])
+        device = x.device
+
+        loss = torch.FloatTensor([0.0]).to(device)
+
+        recon_loss = torch.FloatTensor([0.0]).to(device)
+        kld_loss = torch.FloatTensor([0.0]).to(device)
+        cls_loss = torch.FloatTensor([0.0]).to(device)
+        for ss in range(self.model.total_env):
+            if torch.sum(env == ss) <= 1:
+                continue
+            _, recon_x, mu, logvar, z, s, zs = model(x[env == ss,:,:,:], ss, feature=1, is_train = 1)
+            pred_y = model.get_y_by_zs(mu, logvar, ss)
+            recon_loss_t, kld_loss_t = self.VAE_loss(recon_x, x[env == ss,:,:,:], mu, logvar)
+            cls_loss_t = F.nll_loss(torch.log(pred_y), target[env == ss])
+            
+            recon_loss = torch.add(recon_loss, torch.sum(env == ss) * recon_loss_t)
+            kld_loss = torch.add(kld_loss, torch.sum(env == ss) * kld_loss_t)
+            cls_loss = torch.add(cls_loss, torch.sum(env == ss) * cls_loss_t)
+        recon_loss = recon_loss / x.size(0)
+        kld_loss = kld_loss / x.size(0)
+        cls_loss = cls_loss / x.size(0)
+
+        loss = torch.add(loss, self.hparams['weight_recon'] * recon_loss + self.hparams['weight_kld'] * kld_loss + cls_loss)
+        
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
+
+        return {
+            "cls_loss":     cls_loss.item(),
+            "kld_loss":     kld_loss.item(),
+            "recon_loss":   recon_loss.item(),
+            "loss":         loss.item(),
+        }
+    
