@@ -88,6 +88,11 @@ class Algorithm(torch.nn.Module):
     def predict(self, x):
         raise NotImplementedError
 
+    def begin_epoch(self):
+        pass
+    def end_epoch(self):
+        pass
+
 class ERM(Algorithm):
     """
     Empirical Risk Minimization (ERM)
@@ -2496,4 +2501,216 @@ class LaCIM(Algorithm):
             "recon_loss":   recon_loss.item(),
             "loss":         loss.item(),
         }
+
+from baselines.tcm.cyclegan.base_dataset import get_transform
+from baselines.tcm.cyclegan.cycle_gan_model import CycleGANModel
+from baselines.tcm.dda_model.dda_model import DDAModel
+class TCM(Algorithm):
+    """Transporting Cusal Mechanisms
+        
+        @misc{yue_transporting_2021,
+            title = {Transporting Causal Mechanisms for Unsupervised Domain Adaptation},
+            url = {http://arxiv.org/abs/2107.11055},
+            doi = {10.48550/arXiv.2107.11055},
+            number = {{arXiv}:2107.11055},
+            publisher = {{arXiv}},
+            author = {Yue, Zhongqi and Sun, Qianru and Hua, Xian-Sheng and Zhang, Hanwang},
+            urldate = {2023-06-18},
+            date = {2021-07-28},
+            eprinttype = {arxiv},
+            eprint = {2107.11055 [cs]},
+            keywords = {Computer Science - Computer Vision and Pattern Recognition},
+        }
+    """
+    def translate_opt(self, num_classes, num_domains, hparams):
+        import argparse
+
+        main_args = {
+            'debug': False,
+            'input_nc': 3,
+            'output_nc': 3,
+            'ngf': 64, 'ndf': 64,
+            'netD': 'basic', 'netG': 'resnet_9blocks',
+            'n_layers_D': 3,
+            'norm': 'instance',
+            'init_type': 'normal',
+            'init_gain': 0.02,
+            'no_dropout': False,
+            'direction': 'AtoB',
+            'load_size': 256, 'crop_size': 224,
+            'max_dataset_size': float("inf"),
+            'preprocess': 'resize_and_crop',
+            'no_flip': False,
+
+            'phase': 'train',
+
+            'n_experts': 3,
+            'expert_criteria': 'dc',
+            'c_criteria_iterations': 5000,
+            'i_criteria_iterations': 5000,
+            'expert_warmup_mode': 'random',
+            'expert_warmup_iterations': 999999,
+            'lr_trick': 1,
+
+
+
+            'lr': hparams['lr'],
+            'n_epochs_decay': 100,
+            'beta1': hparams['beta1'],
+            'gan_mode': 'lsgan',
+            'pool_size': 50,
+            'lr_policy': 'linear',
+            'lr_decay_iters': 50,
+            'aspect_ratio': 1.0,
+        }
+
+        cyclegan_args = {
+            'lambda_A': hparams['weight_cycleloss_ABA'],
+            'lambda_B': hparams['weight_cycleloss_BAB'],
+            'lambda_identity': hparams['weight_cycleloss_identity'],
+            'lambda_diversity': hparams['weight_cycleloss_diversity']
+        }
+
+        dda_args = {
+            '--backbon_train_mode': True,
+            'num_classes': num_classes,
+            'resnet_name': 'ResNet50',
+            'use_maxpool': True,
+            'freeze_layer1': False,
+            'z_dim': hparams['z_dim'],
+            'backbone_lr': hparams['lr_backbone'],
+            'vae_lr': hparams['lr_vae'],
+            'linear_lr': hparams['lr_linear'],
+            'linear_weight_decay': hparams['linear_weight_decay'],
+            'linear_momentum': hparams['linear_momentum'],
+            'dda_init_type': 'kaiming',
+            'dda_init_gain': 0.02,
+            'align_feature': False,
+            'align_logits': True,
+            'align_t2s': True,
+            'discriminator_hidden_dim': 1024,
+            'discimnator_lr': hparams['lr_d'],
+            'gvbd_weight': 0.0,
+            'gvbg_weight': 0.0,
+            'alignment_weight': hparams['weight_align'],
+            'backward_linear_loss': True,
+            'accurate_mu': False,
+            'no_entropy_weight': False,
+            'label_smoothing': False,
+            'beta_vae': 1.0,
+            'bundle_transform': False,
+            'bundl_resized_crop': False,
+            'use_target_estimate': False,
+            'use_linear_logits': False,
+            'use_dda2': False,
+            'use_dropout': False,
+            'all_experts': False,
+        }
+
+        args = {**main_args, **cyclegan_args, **dda_args}
+        return argparse.Namespace(**args)
     
+    def __init__(self, input_shape, num_classes, num_domains, hparams):
+        super().__init__(input_shape, num_classes, num_domains, hparams)
+        opt = self.translate_opt(num_classes, num_domains, hparams)
+        self.opt = opt
+        self.cyclegan = CycleGANModel(opt)
+        self.breaks = False
+        self.early_stop_active_experts = False
+        self.n_experts = 1
+
+        self.transform_A = get_transform(self.opt, grayscale=False)
+        self.transform_B = get_transform(self.opt, grayscale=False)
+
+        self.dda = DDAModel(self.opt)
+
+        self.epoch_cyclegan = hparams['epoch_cyclegan']
+        self.step = 0
+
+    
+    def update_cyclegan(self, minibatches, unlabeled):
+        if self.breaks:
+            return None
+        assert self.cyclegan.isTrain
+
+        
+        def make_data(minibatches, unlabeled):
+            assert len(minibatches) == 1    # DA with only 1 source domain as A
+            assert unlabeled is not None    # DA with 1 target domain as B
+            assert isinstance(unlabeled, list) and len(unlabeled) == 1
+            A, _ = minibatches[0]
+            B = unlabeled[0]
+
+            A = self.transform_A(A)
+            B = self.transform_B(B)
+
+            return {
+                'A': A,
+                'B': B,
+                'A_paths': None,
+                'B_path': None
+            }
+    
+        self.cyclegan.set_input(make_data(minibatches, unlabeled))         # unpack data from dataset and apply preprocessing
+        self.cyclegan.optimize_parameters()   # calculate loss functions, get gradients, update network weights
+
+        return {**dict(self.cyclegan.get_current_losses()), 'status': "CycleGAN"}
+    
+    def begin_epoch(self):
+        self.cyclegan.update_learning_rate()
+    def end_epoch(self):
+        if self.early_stop_active_expert:
+            n_active_expert = (model.epoch_panel_tracker > 0).sum()
+            if n_active_expert < self.n_experts - 1:
+                self.breaks = True
+        
+        self.cyclegan.end_epoch()
+
+    def generate(self, *, A=None, B=None):
+        with torch.no_grad():
+            self.cyclegan.test()
+            inputs = {'A': A, 'B': B, 'A_paths': None, 'B_paths': None}
+            self.cyclegan.set_input(inputs)
+            self.cyclegan.forward()
+            self.cyclegan.backward_G(backward_loss=False)
+            return self.cyclegan.fake_B_all().transpose(0, 1), self.cyclegan.fake_A_all().transpose(0, 1)
+
+
+    def update_dda(self, minibatches, unlabeled):
+        self.dda.train_mode()
+        def make_inputs(minibatches, unlabeled):
+            assert len(minibatches) == 1    # DA with only 1 source domain as A
+            assert unlabeled is not None    # DA with 1 target domain as B
+            assert isinstance(unlabeled, list) and len(unlabeled) == 1
+            A, Y = minibatches[0]
+            B = unlabeled[0]
+
+            s2t, t2s = self.generate(A=A, B=B)
+
+            return A, Y, s2t, B, t2s
+
+        self.dda.set_input(*make_inputs(minibatches, unlabeled))
+        train_acc = self.dda.optimize()
+
+        return {
+            'train_accuracy': train_acc.item(),
+            'losses': self.dda.get_current_losses()
+        }
+
+    def update(self, minibatches, unlabeled):
+        if self.step < self.epoch_cyclegan:
+            return self.update_cyclegan(minibatches, unlabeled)
+        else:
+            return self.update_dda(minibatches, unlabeled)
+    
+    def predict(self, x):
+        self.dda.test_mode()
+        if self.opt.accurate_mu:
+            self.dda.target_mu = self.dda.get_t2s_mu(test_loader)
+        t2s, _ = self.generate(A=x)
+        print(t2s.shape)
+        self.dda.set_input(None, None, None, x, t2s)
+        logits = self.dda.predict()
+        return logits
+        
+        

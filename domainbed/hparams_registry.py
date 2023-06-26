@@ -158,6 +158,24 @@ def _hparams(algorithm, dataset, random_seed):
         else:
             assert 'Cov' in algorithm
             _hparam('d_spu_ratio', 0.5, lambda r: r.uniform(0.1, 0.8))
+    elif algorithm == 'TCM':
+        _hparam('weight_cycleloss_ABA', 10.0, lambda r: 10 ** r.uniform(0, 2))
+        _hparam('weight_cycleloss_BAB', 10.0, lambda r: 10 ** r.uniform(0, 2))
+        _hparam('weight_cycleloss_identity', 0.5, lambda r: 10 ** r.uniform(-1, 0))
+        _hparam('weight_cycleloss_diversity', 0.01, lambda r: 10 ** r.uniform(-3, -1))
+
+        _hparam('beta1', 0.5, lambda r: r.choice([0., 0.5]))
+
+        _hparam('z_dim', 100, lambda r: 100)
+        _hparam('lr_backbone', 3e-4, lambda r: 10**r.uniform(-5.5, -3.5))
+        _hparam('lr_vae', 1e-4, lambda r: 10**r.uniform(-5, -3))
+        _hparam('lr_linear', 1e-3, lambda r: 10 ** r.uniform(-4, -2))
+        _hparam('linear_weight_decay', 1e-3, lambda r: 10 ** r.uniform(-4, -2))
+        _hparam('linear_momentum', 0.9, lambda r: 0.9)
+        _hparam('lr_d', 3e-3, lambda r: 10**r.uniform(-4.5, -2.5))
+        _hparam('weight_align', 1.0, lambda r: 10**r.uniform(-1, 1))
+
+
 
 
 
@@ -204,6 +222,8 @@ def _hparams(algorithm, dataset, random_seed):
         _hparam('weight_decay_g', 0., lambda r: 0.)
     elif algorithm in ['DANN', 'CDANN']:
         _hparam('weight_decay_g', 0., lambda r: 10**r.uniform(-6, -2))
+
+
 
     return hparams
 
