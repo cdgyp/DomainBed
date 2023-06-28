@@ -13,7 +13,7 @@ from wilds.datasets.camelyon17_dataset import Camelyon17Dataset
 from wilds.datasets.fmow_dataset import FMoWDataset
 import collections
 
-from .....data.synthetic import CenteredImageScene, SyntheticDataset, assure_tuple, OptionalToTensor, ClassReducer
+from codes.data.synthetic import CenteredImageScene, SyntheticDataset, assure_tuple, OptionalToTensor, ClassReducer
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 

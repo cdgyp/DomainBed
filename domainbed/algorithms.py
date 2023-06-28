@@ -4,11 +4,14 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.autograd as autograd
+from torchvision import transforms
 
 import copy
 import numpy as np
 from collections import OrderedDict
 from torch.utils.tensorboard import SummaryWriter
+
+from tqdm.auto import tqdm
 
 try:
     from backpack import backpack, extend
@@ -55,7 +58,25 @@ ALGORITHMS = [
     'CausIRL_CORAL',
     'CausIRL_MMD',
     'EQRM',
-    # 'InformationalHeat',
+    'InformationalHeat',
+    'CT4Recognition',
+    'ISR_Mean',
+    'ISR_Cov',
+    'LaCIM',
+    'TCM'
+]
+
+DA_ONLY_ALGORITHMS = [
+    'InformationalHeat',
+    'TCM',
+    'CDTrans',
+    'TVT'
+]
+
+HEAVY_PREDICTIONS = [
+    'ISR_Mean',
+    'ISR_Cov',
+    'CT4Recognition'
 ]
 
 def get_algorithm_class(algorithm_name):
@@ -91,6 +112,11 @@ class Algorithm(torch.nn.Module):
     def begin_epoch(self):
         pass
     def end_epoch(self):
+        pass
+    def setup(self, start_epoch, n_epoch):
+        """
+            setting up schedulers, etc.
+        """
         pass
 
 class ERM(Algorithm):
@@ -2063,7 +2089,7 @@ class EQRM(ERM):
 
         return {'loss': loss.item()}
 
-from .... import (
+from codes.models import (
     model, 
     abstraction, 
     attention,
@@ -2073,7 +2099,7 @@ from .... import (
     discrete_rate_distortion, 
     inference,
 )
-from .....algorithms import training
+from codes.algorithms import training
 
 class InformationalHeat(Algorithm):
     def __init__(self, input_shape, num_classes, num_domains, hparams):
@@ -2190,10 +2216,14 @@ class InformationalHeat(Algorithm):
 
 
     def predict(self, x):
-        self.model.eval()
         return self.model(x, None, None, None, test_mode=True)
+    def train(self):
+        self.model.train()
+    def eval(self):
+        self.model.eval()
 
 from torch.utils.data import Dataset, DataLoader
+import sys
 class DatasetRequiringAlgorithm(Algorithm):
     def set_datasets(self, datasets: 'list[Dataset]'):
         self.datasets = datasets
@@ -2219,6 +2249,30 @@ class AbstractISR(DatasetRequiringAlgorithm):
         }
 
     """
+
+    CHECKPOINT_FREQ = 300
+
+    class ISRClassifier(isr.ISRClassifier):
+        def fit(self, features, labels, envs, chosen_class: int = None, d_spu: int = None, given_clf=None,
+                spu_scale: float = None):
+
+            # estimate the stats (mean & cov) and fit a PCA if requested
+            self.fit_data(features, labels, envs)
+
+            if chosen_class is None:
+                assert self.chosen_class is not None, "chosen_class must be specified if not given in the constructor"
+                chosen_class = self.chosen_class
+
+            if self.version == 'mean':
+                self.fit_isr_mean(chosen_class=chosen_class, d_spu=d_spu)
+            elif self.version == 'cov':
+                self.fit_isr_cov(chosen_class=chosen_class, d_spu=d_spu)
+            else:
+                raise ValueError(f"Unknown ISR version: {self.version}")
+
+            self.fit_clf(features, labels, given_clf=given_clf) # spu_sclae is passed unexpectedly in original isr.ISRClassifier
+            return self
+
     def __init__(self, version, input_shape, num_classes, num_domains, hparams):
         super().__init__(input_shape, num_classes, num_domains, hparams)
 
@@ -2228,15 +2282,18 @@ class AbstractISR(DatasetRequiringAlgorithm):
             self.backbone = ERM(input_shape, num_classes, num_domains, hparams)
         else:
             raise NotImplemented(hparams['backbone'])
-        self.isr_classifier = isr.ISRClassifier(
+        self.isr_classifier = self.ISRClassifier(
             version, 
-            d_spu= int(hparams['d_spu_ratio'] * self.backbone.featurizer.n_outputs) if hparams('d_spu_ratio') >= 0 else -1
+            d_spu= int(hparams['d_spu_ratio'] * self.backbone.featurizer.n_outputs) if hparams['d_spu_ratio'] >= 0 else -1
         )
 
         self.features = None
         self.labels = None
         self.envs = None
         self.is_classifier_latest = False
+
+        self.batch_size = hparams['batch_size']
+
     
     def update(self, minibatches, unlabeled=None):
         self.backbone.featurizer.train()
@@ -2246,28 +2303,29 @@ class AbstractISR(DatasetRequiringAlgorithm):
         self.envs = None
         return self.backbone.update(minibatches, unlabeled)
     
-    def parse_feature(self):
+    def parse_feature(self, device='cuda'):
         self.features = []
         self.labels = []
         self.envs = []
         self.backbone.featurizer.eval()
         with torch.no_grad():
-            for env, dataset in self.datasets:
-                dl = DataLoader(dataset, 256, False)
+            for env, dataset in enumerate(self.datasets):
+                dl = DataLoader(dataset, self.batch_size, False, num_workers=8, pin_memory=True)
                 for X, Y in dl:
-                    self.features.append(self.backbone.featurizer(X))
-                    self.lables.append(Y)
-                self.envs.append(torch.full([len(Y)], env, device=self.features[-1].device))
+                    feature = self.backbone.featurizer(X.to(device))
+                    self.features.append(feature)
+                    self.labels.append(Y.to(device))
+                    self.envs.append(torch.full([len(Y)], env, device=self.features[-1].device))
             self.features = torch.cat(self.features, dim=0)
             self.labels = torch.cat(self.labels, dim=0)
             self.envs = torch.cat(self.envs, dim=0)
             assert len(self.features.shape) == 2, self.features.shape
             assert len(self.labels.shape) == 1, self.labels.shape
-            assert len(self.envs) == 1, self.envs.shape
+            assert len(self.envs.shape) == 1, self.envs.shape
 
 
     def fit(self):
-        self.isr_classifier.fit(self.features, self.labels, self.classifier, chosen_class=0)
+        self.isr_classifier.fit(self.features.cpu().numpy(), self.labels.cpu().numpy(), self.envs.cpu().numpy(), chosen_class=0)
         self.is_classifier_latest = True
         self.features = None
         self.labels = None,
@@ -2275,17 +2333,18 @@ class AbstractISR(DatasetRequiringAlgorithm):
 
     def predict(self, x):
         if not self.is_classifier_latest:
-            self.parse_feature()
+            self.parse_feature(x.device)
             self.fit()
-        
-        return self.isr_classifier(x)
+        features = self.backbone.featurizer(x)
+        res = torch.tensor(self.isr_classifier.predict(features.cpu().numpy()))
+        return res.to(x.device)
 
 
 class ISR_Mean(AbstractISR):
      def __init__(self, input_shape, num_classes, num_domains, hparams):
          super().__init__("mean", input_shape, num_classes, num_domains, hparams)
 
-class ISR_Mean(AbstractISR):
+class ISR_Cov(AbstractISR):
      def __init__(self, input_shape, num_classes, num_domains, hparams):
          super().__init__("cov", input_shape, num_classes, num_domains, hparams)
 
@@ -2311,7 +2370,9 @@ from torch.utils.data import ConcatDataset, RandomSampler, Subset
 class CT4Recognition(DatasetRequiringAlgorithm):
     """Causal Transportability for Recognition
 
-    only SimCLR pretraining is supported
+    Only SimCLR pretraining is supported. SimCLR codes are adapted from https://github.com/sthalles/SimCLR.
+
+    Color-related augmentations in SimCLR are disabled if spurious features are colors.
 
     @misc{mao_causal_2022,
         title = {Causal Transportability for Visual Recognition},
@@ -2326,9 +2387,13 @@ class CT4Recognition(DatasetRequiringAlgorithm):
         keywords = {Computer Science - Computer Vision and Pattern Recognition},
     }
     """
+    CHECKPOINT_FREQ = 300
     def __init__(self, input_shape, num_classes, num_domains, hparams):
         super().__init__(input_shape, num_classes, num_domains, hparams)
         self.featurizer = networks.Featurizer(input_shape, self.hparams)
+        assert input_shape[1] == input_shape[2]
+        from baselines.SimCLR import SimCLR
+        self.simCLR = SimCLR(input_shape[1], self.featurizer, hparams)
 
         x_prime_shape = 1
         for l in input_shape:
@@ -2343,62 +2408,108 @@ class CT4Recognition(DatasetRequiringAlgorithm):
         self.num_classes = num_classes
 
         self.optimizer = torch.optim.Adam(
-            self.network.parameters(),
+            self.classifier.parameters(),
             lr=self.hparams["lr"],
             weight_decay=self.hparams['weight_decay']
         )
+    
+    def setup(self, start_epoch, n_epoch):
+        self.simCLR.setup(start_epoch, n_epoch)
+    def begin_epoch(self):
+        self.simCLR.begin_epoch()
+    def end_epoch(self):
+        self.simCLR.end_epoch()
+
+    def infinite_iterator(self, dataloader: DataLoader):
+        iterator = iter(dataloader)
+        while True:
+            try:
+                yield next(iterator)
+            except StopIteration:
+                iterator = iter(dataloader)
+                yield next(iterator)
 
     def build_dataloaders(self, b):
         dataset = ConcatDataset(self.datasets)
         sampler = RandomSampler(dataset, replacement=True)
-        self.dataloader = DataLoader(dataset, batch_size=b, sampler=sampler, num_workers=8)
+        self.dataloader = DataLoader(dataset, batch_size=b, sampler=sampler, num_workers=8, pin_memory=True, drop_last=True)
+        self.marginal_iterator = self.infinite_iterator(self.dataloader)
+
+        tmp_dataloader = DataLoader(dataset, 128, False, num_workers=8) # to fasten label gathering with multiple workers
 
         self.label_specific_dataloader = []
-        labels = [label for _, label in dataset]
+        labels = torch.cat([label for _, label in tqdm(tmp_dataloader, desc="gathering labels")]).flatten()
         assert max(labels) < self.num_classes, max(labels)
 
-        for y in range(self.num_classes):
+        for y in tqdm(range(self.num_classes), desc="conditional dataloader"):
             indices = [i for i, label in enumerate(labels) if label == y]
             filtered = Subset(dataset, indices)
-            self.label_specific_dataloader.append(DataLoader(filtered, 1, True, num_workers=8))
+            label_specific_sampler = RandomSampler(filtered, replacement=True)
+            self.label_specific_dataloader.append(DataLoader(filtered, 1, num_workers=1, sampler=label_specific_sampler, pin_memory=True, drop_last=True))
+        self.conditional_iterators = [self.infinite_iterator(l) for l in self.label_specific_dataloader]
+        
 
     def sample(self, b, ys=None):
-        if not hasattr(self, 'dataloder') or self.dataloader is None or self.dataloader.batch_size != b:
+        if not hasattr(self, 'dataloader') or self.dataloader is None or self.dataloader.batch_size < b:
             self.build_dataloaders(b)
 
         if ys is None:
-            return next(iter(self.dataloader))[0]
+            return next(self.marginal_iterator)[0][:b]
         else:
-            res = []
-            for y in ys:
-                res.append(next(iter(self.label_specific_dataloaders[y]))[0])
+            res = [next(self.conditional_iterators[y])[0] for y in ys]
             res = torch.cat(res, dim=0)
             assert len(res.shape) == 4
             return res
 
-    def corrupted(self, b, y=None):
-        samples = self.sample(b, y)
+    def corrupted(self, b, device, y=None):
+        samples = self.sample(b, y).to(device)
         assert len(samples.shape) == 4, samples.shape # b c w h
         assert samples.shape[1] == 3, samples.shape
+        assert len(samples) == b, (samples.shape, b)
         return self.shuffle(samples)
             
     def joint(self, r, y=None):
-        x_prime = self.corrupted(b=len(r))
-        joint = torch.cat([r, x_prime], dim=1)
-        assert len(joint.shape) == 2
+        x_prime = self.corrupted(b=len(r), device=r.device, y=y)
+        joint = torch.cat([r, x_prime.flatten(1)], dim=1)
+        assert len(joint.shape) == 2 and joint.shape[0] == r.shape[0]
         return joint
         
-    def predict(self, x):
+    def predict(self, x, y=None):
         r = self.featurizer(x)
         p_y = []
         for _ in range(self.n_j):
-            logit = self.classifier(self.joint(r))
-            p_y.append(torch.softmax(logit))
-        torch.stack(p_y, dim=1)
+            logit = self.classifier(self.joint(r, y=y))
+            assert len(logit.shape) == 2 and logit.shape[0] == x.shape[0], logit.shape
+            p_y.append(torch.softmax(logit, dim=-1))
+        p_y = torch.stack(p_y, dim=1)
         return p_y.mean(dim=1)
 
     def update(self, minibatches, unlabeled=None):
-        raise NotImplemented()
+        x = torch.cat([x for x, y in minibatches])
+        y = torch.cat([y for x, y in minibatches])
+
+        losses_SimCLR = self.simCLR.update(x)
+        
+
+        loss = F.cross_entropy(self.predict(x, y), y)
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
+
+        return {
+            **losses_SimCLR,
+            'CE_loss': float(loss)
+        }
+    def train(self):
+        self.simCLR.train()
+        self.classifier.train()
+    def eval(self):
+        self.simCLR.eval()
+        self.classifier.eval()
+
+
+sys.path.insert(-1, 'baselines/LaCIM')
+sys.path.insert(-1, 'baselines/LaCIM/real_world')
 from baselines.LaCIM.real_world.LaCIM_rho import LaCIM_rho
 class LaCIM(Algorithm):
     """LaCIM
@@ -2411,32 +2522,176 @@ class LaCIM(Algorithm):
             langid = {english},
         }
     """
+    class ExpandedLaCIM_rho(LaCIM_rho):
+        def __init__(self, in_channel=1, zs_dim=256, num_classes=1, decoder_type=0, total_env=2, args=None, is_cuda=1):
+            self.image_size = args.image_size
+            super().__init__(in_channel, zs_dim, num_classes, decoder_type, total_env, args, is_cuda)
+        def get_Enc_x_256(self):
+            return nn.Sequential(
+                self.Conv_bn_ReLU(self.in_channel, 32),
+                nn.MaxPool2d(2),
+                self.Conv_bn_ReLU(32, 64),
+                nn.MaxPool2d(2),
+                self.Conv_bn_ReLU(64, 128),
+                nn.MaxPool2d(2),
+                self.Conv_bn_ReLU(128, 256),
+                nn.MaxPool2d(2),
+                self.Conv_bn_ReLU(256, 256),
+                nn.MaxPool2d(2),
+                self.Conv_bn_ReLU(256, 256),
+                nn.AdaptiveAvgPool2d(1),
+                nn.Flatten(),
+            )
+        def get_Enc_x_28(self):
+            # HACK: avoid modification to paper's codes
+            return self.get_Enc_x_256()
+        
+        def get_Dec_x_256(self):
+            from baselines.LaCIM.real_world.models import UnFlatten
+            return nn.Sequential(
+                UnFlatten(type='2d'),
+                nn.Upsample(2),
+                self.TConv_bn_ReLU(in_channels=self.zs_dim, out_channels=128, kernel_size=2, stride=2, padding=0),
+                self.TConv_bn_ReLU(in_channels=128, out_channels=64, kernel_size=2, stride=2, padding=0),
+                self.TConv_bn_ReLU(in_channels=64, out_channels=32, kernel_size=2, stride=2, padding=0),
+                self.TConv_bn_ReLU(in_channels=32, out_channels=16, kernel_size=2, stride=2, padding=0),
+                self.TConv_bn_ReLU(in_channels=16, out_channels=8, kernel_size=2, stride=2, padding=0),
+                self.TConv_bn_ReLU(in_channels=8, out_channels=4, kernel_size=2, stride=2, padding=0),
+                self.TConv_bn_ReLU(in_channels=4, out_channels=4, kernel_size=2, stride=2, padding=0),
+                nn.Conv2d(in_channels=4, out_channels=self.in_channel, kernel_size=256 - self.image_size + 1),
+                nn.Sigmoid()
+            )
+        def get_Dec_x_28(self):
+            # HACK: avoid modification to paper's codes
+            return self.get_Dec_x_256()
+        def get_x_y(self, z, s):
+            zs = torch.cat([z, s], dim=1)
+            rec_x = self.Dec_x(zs)
+            pred_y = self.Dec_y(zs[:, self.z_dim:])
+            return rec_x[:, :, -self.image_size:, -self.image_size:].contiguous(), pred_y
+        def forward(self, x, env=0, feature=0, is_train=0, is_debug=0):
+            raw_x = x
+            x = self.Enc_x(x)
+            if is_train == 0:
+                # test only
+                # init
+                with torch.no_grad():
+                    z_init, s_init = None, None
+                    for env_idx in range(self.args.env_num):
+                        mu, logvar = self.encode(x, env_idx)
+                        for ss in range(self.args.sample_num):
+                            zs = self.reparametrize(mu, logvar)
+                            z = self.phi_z[env_idx](zs[:, :self.z_dim])
+                            s = self.phi_s[env_idx](zs[:, self.z_dim:])
+                            zs = torch.cat([z, s], dim=1)
+                            recon_x = self.Dec_x(zs)
+                            recon_x = recon_x[:, :, -self.image_size:, -self.image_size:].contiguous()
+ 
+                            if z_init is None:
+                                z_init, s_init = z, s
+                                min_rec_loss = F.binary_cross_entropy(recon_x.view(-1, 3 * self.args.image_size ** 2),
+                                                                    (raw_x * 0.5 + 0.5).view(-1,
+                                                                                            3 * self.args.image_size ** 2),
+                                                                    reduction='none').mean(1)
+                            else:
+                                new_loss = F.binary_cross_entropy(recon_x.view(-1, 3 * self.args.image_size ** 2),
+                                                                    (raw_x * 0.5 + 0.5).view(-1,
+                                                                                            3 * self.args.image_size ** 2),
+                                                                    reduction='none').mean(1)
+                                for i in range(x.size(0)):
+                                    if new_loss[i] < min_rec_loss[i]:
+                                        min_rec_loss[i] = new_loss[i]
+                                        z_init[i], s_init[i] = z[i], s[i]
+                with torch.enable_grad():
+                    z, s = z_init, s_init
+                    if is_debug:
+                        pred_y_init = self.get_y(s)
+                    z.requires_grad = True
+                    s.requires_grad = True
+            
+                    optimizer = torch.optim.Adam(params=[z, s], lr=self.args.lr2, weight_decay=self.args.reg2)
+            
+                    for i in range(self.args.test_ep):
+                        optimizer.zero_grad()
+                        recon_x, _ = self.get_x_y(z, s)
+                        assert recon_x.requires_grad
+                        BCE = F.binary_cross_entropy(recon_x.view(-1, 3 * self.args.image_size ** 2),
+                                                    (raw_x * 0.5 + 0.5).view(-1, 3 * self.args.image_size ** 2),
+                                                    reduction='none')
+                        loss = BCE.mean(1) 
+                        loss = loss.mean()
+                        loss.backward()
+                        optimizer.step()
+                        # print(i, s)
+                pred_y = self.get_y(s)
+                if is_debug:
+                    return pred_y_init, pred_y
+                else:
+                    return pred_y
+            elif is_train == 2:
+                mu, logvar = self.encode(x, 0)
+                zs = self.reparametrize(mu, logvar)
+                s = self.phi_s[0](zs[:, self.z_dim:])
+                return self.Dec_y(s)
+            else:
+                mu, logvar = self.encode(x, env)
+                zs = self.reparametrize(mu, logvar)
+                z = self.phi_z[env](zs[:, :self.z_dim])
+                s = self.phi_s[env](zs[:, self.z_dim:])
+                zs = torch.cat([z, s], dim=1)
+                rec_x = self.Dec_x(zs)
+                pred_y = self.Dec_y(zs[:, self.z_dim:])
+                if feature == 1:
+                    return pred_y, rec_x[:, :, -self.image_size:, -self.image_size:].contiguous(), mu, logvar, z, s, zs
+                else:
+                    return pred_y, rec_x[:, :, -self.image_size:, -self.image_size:].contiguous(), mu, logvar, z, s
     def __init__(self, input_shape, num_classes, num_domains, hparams):
         super().__init__(input_shape, num_classes, num_domains, hparams)
-        self.model = LaCIM_rho(
+        from argparse import Namespace
+        self.model = LaCIM.ExpandedLaCIM_rho(
             in_channel=3,
             zs_dim=hparams['zs_dim'],
             num_classes=num_classes,
             total_env=num_domains,
-            decoder_type=1
+            decoder_type=1,
+            args=Namespace(**{
+                'z_ratio': 0.5, 
+                'image_size': input_shape[1],
+                'env_num': num_domains,
+                'sample_num': hparams['sample_num'],
+                'lr2': hparams['lr2'],
+                'reg2': hparams['reg2'],
+                'test_ep': hparams['test_ep']
+            })
         )
-        # TODO: 使用 ResNet50 作为骨干网络
+        # TODO: ViT as backbone
 
+        print(input_shape)
         if not isinstance(input_shape, int) and len(input_shape) > 1:
-            assert len(input_shape) == 2
-            assert input_shape[0] == input_shape[1]
-            input_shape = input_shape[0]
+            assert len(input_shape) == 3, input_shape
+            assert input_shape[1] == input_shape[2]
+            input_shape = input_shape[1]
         self.image_size = input_shape
 
         if hparams['optimizer'] == 'sgd':
-            self.optimizer = torch.optim.SGD(model.parameters(), lr=hparams['lr'], momentum=hparams['momentum'], weight_decay=hparams['weight_decay'])
+            self.optimizer = torch.optim.SGD(self.model.parameters(), lr=hparams['lr'], momentum=hparams['momentum'], weight_decay=hparams['weight_decay'])
         else:
-            self.optimizer = torch.optim.Adam(model.parameters(), lr=hparams['lr'], weight_decay=hparams['weight_decay'])
+            self.optimizer = torch.optim.Adam(self.model.parameters(), lr=hparams['lr'], weight_decay=hparams['weight_decay'])
 
         self.hparams = hparams
+
+        from torchvision import transforms
+        self.train_transform = transforms.Compose([
+            transforms.RandomHorizontalFlip(p=0.5),
+            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+        ])
+        self.test_transform = transforms.Compose([
+            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+        ])
         
     
     def predict(self, x):
+        x = self.test_transform(x)
         pred_y_init, pred_y = self.model(x, is_train=0, is_debug=1)
         return pred_y
     def VAE_loss(self, recon_x, x, mu, logvar):
@@ -2451,8 +2706,8 @@ class LaCIM(Algorithm):
         """
         x = x * 0.5 + 0.5
         BCE = F.binary_cross_entropy(
-            recon_x.view(-1, 3 * self.input_shape ** 2), 
-            x.view(-1, 3 * self.input_shape ** 2),
+            recon_x.view(-1, 3 * self.image_size ** 2), 
+            x.view(-1, 3 * self.image_size ** 2),
             reduction='mean'
         )
     
@@ -2465,9 +2720,11 @@ class LaCIM(Algorithm):
             adapted from `train()` of `LaCIM/real_world/LaCIM_rho.py`
         """
         x = torch.cat([x for x, y in minibatches])
+        x = self.train_transform(x)
         target = torch.cat([y for x, y in minibatches])
         env = torch.cat([torch.full_like(y, i) for i, (x, y) in enumerate(minibatches)])
         device = x.device
+        self.model.to(device)
 
         loss = torch.FloatTensor([0.0]).to(device)
 
@@ -2477,8 +2734,8 @@ class LaCIM(Algorithm):
         for ss in range(self.model.total_env):
             if torch.sum(env == ss) <= 1:
                 continue
-            _, recon_x, mu, logvar, z, s, zs = model(x[env == ss,:,:,:], ss, feature=1, is_train = 1)
-            pred_y = model.get_y_by_zs(mu, logvar, ss)
+            _, recon_x, mu, logvar, z, s, zs = self.model(x[env == ss,:,:,:], ss, feature=1, is_train = 1)
+            pred_y = self.model.get_y_by_zs(mu, logvar, ss)
             recon_loss_t, kld_loss_t = self.VAE_loss(recon_x, x[env == ss,:,:,:], mu, logvar)
             cls_loss_t = F.nll_loss(torch.log(pred_y), target[env == ss])
             
@@ -2501,7 +2758,14 @@ class LaCIM(Algorithm):
             "recon_loss":   recon_loss.item(),
             "loss":         loss.item(),
         }
+    def train(self):
+        self.model.train()
+    def eval(self):
+        self.model.eval()
 
+
+
+sys.path.insert(-1, 'baselines/tcm')
 from baselines.tcm.cyclegan.base_dataset import get_transform
 from baselines.tcm.cyclegan.cycle_gan_model import CycleGANModel
 from baselines.tcm.dda_model.dda_model import DDAModel
@@ -2544,38 +2808,42 @@ class TCM(Algorithm):
 
             'phase': 'train',
 
-            'n_experts': 3,
+            'n_experts': 1,
             'expert_criteria': 'dc',
             'c_criteria_iterations': 5000,
             'i_criteria_iterations': 5000,
             'expert_warmup_mode': 'random',
             'expert_warmup_iterations': 999999,
-            'lr_trick': 1,
-
+            'lr_trick': 0,
 
 
             'lr': hparams['lr'],
-            'n_epochs_decay': 100,
             'beta1': hparams['beta1'],
             'gan_mode': 'lsgan',
             'pool_size': 50,
             'lr_policy': 'linear',
             'lr_decay_iters': 50,
             'aspect_ratio': 1.0,
+
+            'gpu_ids': [0],
+            'isTrain': True,
+            'checkpoints_dir': 'domainbed_test',
+            'exp_name': 'none',
         }
 
         cyclegan_args = {
             'lambda_A': hparams['weight_cycleloss_ABA'],
             'lambda_B': hparams['weight_cycleloss_BAB'],
             'lambda_identity': hparams['weight_cycleloss_identity'],
-            'lambda_diversity': hparams['weight_cycleloss_diversity']
+            'lambda_diversity': hparams['weight_cycleloss_diversity'],
+            'epoch_count': 1,
         }
 
         dda_args = {
-            '--backbon_train_mode': True,
+            'backbone_train_mode': hparams['train_backbone'],
             'num_classes': num_classes,
             'resnet_name': 'ResNet50',
-            'use_maxpool': True,
+            'use_maxpool': False,
             'freeze_layer1': False,
             'z_dim': hparams['z_dim'],
             'backbone_lr': hparams['lr_backbone'],
@@ -2589,7 +2857,7 @@ class TCM(Algorithm):
             'align_logits': True,
             'align_t2s': True,
             'discriminator_hidden_dim': 1024,
-            'discimnator_lr': hparams['lr_d'],
+            'discriminator_lr': hparams['lr_d'],
             'gvbd_weight': 0.0,
             'gvbg_weight': 0.0,
             'alignment_weight': hparams['weight_align'],
@@ -2599,22 +2867,57 @@ class TCM(Algorithm):
             'label_smoothing': False,
             'beta_vae': 1.0,
             'bundle_transform': False,
-            'bundl_resized_crop': False,
+            'bundle_resized_crop': False,
             'use_target_estimate': False,
-            'use_linear_logits': False,
+            'use_linear_logits': True,
             'use_dda2': False,
             'use_dropout': False,
             'all_experts': False,
+            'dda_checkpoints_dir': 'none',
+            'dda_exp_name': 'none',
+            'baseline': False,
+            'no_mapping': 0,
+            'pretrain_iteration': 0,
         }
 
-        args = {**main_args, **cyclegan_args, **dda_args}
+        disciminator_args = {
+            'cg_resnet_name': 'ResNet50',
+            'cg_num_classes': num_classes,
+            'cg_align_feature': False,
+            'cg_align_logits': False,
+            'cg_gvbd_weight': 0.0,
+            'cg_gvbg_weight': 0.0
+        }
+
+        args = {**main_args, **cyclegan_args, **dda_args, **disciminator_args}
         return argparse.Namespace(**args)
+        
+    class SimplifiedCycleGANModel(CycleGANModel):
+        def set_input(self, input):
+            self.A_Y = input['A_Y']
+            self.B_Y = input['B_Y']
+            super().set_input(input)
+        
+        def update_input_classname(self):
+            self.input_classnames = []
+            for i in range(self.current_batch_size):
+                self.input_classnames.append(str(int(self.A_Y[i])))
+            for i in range(self.current_batch_size):
+                self.input_classnames.append(str(int(self.B_Y[i])))
+        def train(self):
+            """Make models eval mode during test time"""
+            for name in self.model_names:
+                if isinstance(name, str):
+                    net = getattr(self, 'net' + name)
+                    net.train()
     
     def __init__(self, input_shape, num_classes, num_domains, hparams):
         super().__init__(input_shape, num_classes, num_domains, hparams)
         opt = self.translate_opt(num_classes, num_domains, hparams)
         self.opt = opt
-        self.cyclegan = CycleGANModel(opt)
+        print(opt)
+        self.cyclegan = TCM.SimplifiedCycleGANModel(opt)
+        # self.cyclegan.setup(opt)
         self.breaks = False
         self.early_stop_active_experts = False
         self.n_experts = 1
@@ -2622,25 +2925,33 @@ class TCM(Algorithm):
         self.transform_A = get_transform(self.opt, grayscale=False)
         self.transform_B = get_transform(self.opt, grayscale=False)
 
-        self.dda = DDAModel(self.opt)
+        from torchvision import transforms
+        def remove_to_tensor(transform: transforms.Compose):
+            assert isinstance(transform, transforms.Compose)
+            transform.transforms = [t for t in transform.transforms if not isinstance(t, transforms.ToTensor)]
 
-        self.epoch_cyclegan = hparams['epoch_cyclegan']
+        remove_to_tensor(self.transform_A)
+        remove_to_tensor(self.transform_B)
+
         self.step = 0
+        self.n_cyclegan_step = hparams['n_cyclegan_step']
 
+        self.dda = DDAModel(self.opt)
+        self.dda.train_mode()
+        # self.dda.setup()
     
     def update_cyclegan(self, minibatches, unlabeled):
         if self.breaks:
             return None
         assert self.cyclegan.isTrain
-
+        self.cyclegan.train()
         
         def make_data(minibatches, unlabeled):
-            assert len(minibatches) == 1    # DA with only 1 source domain as A
             assert unlabeled is not None    # DA with 1 target domain as B
-            assert isinstance(unlabeled, list) and len(unlabeled) == 1
-            A, _ = minibatches[0]
-            B = unlabeled[0]
-
+            assert isinstance(unlabeled, list)
+            A = torch.cat([x for x, y in minibatches], dim=0)
+            Y_A = torch.cat([y for x, y in minibatches], dim=0)
+            B = torch.cat([x for x in unlabeled], dim=0)
             A = self.transform_A(A)
             B = self.transform_B(B)
 
@@ -2648,13 +2959,26 @@ class TCM(Algorithm):
                 'A': A,
                 'B': B,
                 'A_paths': None,
-                'B_path': None
+                'B_paths': None,
+                'A_Y': Y_A,
+                'B_Y': torch.full_like(Y_A, fill_value=-1)
             }
     
         self.cyclegan.set_input(make_data(minibatches, unlabeled))         # unpack data from dataset and apply preprocessing
         self.cyclegan.optimize_parameters()   # calculate loss functions, get gradients, update network weights
 
-        return {**dict(self.cyclegan.get_current_losses()), 'status': "CycleGAN"}
+        return {**dict(self.cyclegan.get_current_losses()), 'status': "CycleGAN", 'train_accuracy': 'none', 'losses': 'none'}
+    
+    def setup(self, start_epoch, n_epoch):
+        from argparse import Namespace
+        args = {
+            **vars(self.opt),
+            'n_epochs': n_epoch // 2,
+            'n_epochs_decay': n_epoch // 2,
+            'epoch_count': start_epoch,
+        }
+        self.cyclegan.setup(Namespace(**args))
+        self.dda.setup()
     
     def begin_epoch(self):
         self.cyclegan.update_learning_rate()
@@ -2668,16 +2992,17 @@ class TCM(Algorithm):
 
     def generate(self, *, A=None, B=None):
         with torch.no_grad():
-            self.cyclegan.test()
-            inputs = {'A': A, 'B': B, 'A_paths': None, 'B_paths': None}
+            self.cyclegan.eval()
+            inputs = {'A': A, 'B': B, 'A_paths': None, 'B_paths': None, 'A_Y': torch.full([len(A)], -1, device=A.device), 'B_Y': torch.full([len(B)], -1, device=B.device)}
             self.cyclegan.set_input(inputs)
             self.cyclegan.forward()
             self.cyclegan.backward_G(backward_loss=False)
-            return self.cyclegan.fake_B_all().transpose(0, 1), self.cyclegan.fake_A_all().transpose(0, 1)
+            assert len(self.cyclegan.fake_B_all) == 1, len(self.cyclegan.fake_B_all)
+            assert len(self.cyclegan.fake_A_all) == 1, len(self.cyclegan.fake_A_all)
+            return self.cyclegan.fake_B_all[0], self.cyclegan.fake_A_all[0]
 
 
     def update_dda(self, minibatches, unlabeled):
-        self.dda.train_mode()
         def make_inputs(minibatches, unlabeled):
             assert len(minibatches) == 1    # DA with only 1 source domain as A
             assert unlabeled is not None    # DA with 1 target domain as B
@@ -2693,24 +3018,36 @@ class TCM(Algorithm):
         train_acc = self.dda.optimize()
 
         return {
-            'train_accuracy': train_acc.item(),
+            'status': 'DDA',
+            'dda_train_accuracy': train_acc.item(),
             'losses': self.dda.get_current_losses()
         }
 
     def update(self, minibatches, unlabeled):
-        if self.step < self.epoch_cyclegan:
-            return self.update_cyclegan(minibatches, unlabeled)
+        if self.step < self.n_cyclegan_step:
+            losses_cyclegan = self.update_cyclegan(minibatches, unlabeled)
         else:
-            return self.update_dda(minibatches, unlabeled)
+            losses_cyclegan = {}
+        losses_dda = self.update_dda(minibatches, unlabeled)
+        self.step += 1
+        return {
+            **losses_cyclegan,
+            **losses_dda
+        }
     
     def predict(self, x):
-        self.dda.test_mode()
         if self.opt.accurate_mu:
             self.dda.target_mu = self.dda.get_t2s_mu(test_loader)
-        t2s, _ = self.generate(A=x)
-        print(t2s.shape)
+        _, t2s= self.generate(A=x, B=x)
         self.dda.set_input(None, None, None, x, t2s)
         logits = self.dda.predict()
         return logits
+    def train(self):
+        self.dda.train_mode()
+        self.cyclegan.train()
+
+    def test(self):
+        self.dda.test_mode()
+        self.cyclegan.eval()
         
         

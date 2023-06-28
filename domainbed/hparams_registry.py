@@ -7,7 +7,7 @@ def _define_hparam(hparams, hparam_name, default_val, random_val_fn):
     hparams[hparam_name] = (hparams, hparam_name, default_val, random_val_fn)
 
 
-def _hparams(algorithm, dataset, random_seed):
+def _hparams(algorithm, dataset, random_seed, args=None):
     """
     Global registry of hyperparams. Each entry is a (default, random) tuple.
     New algorithms / networks / etc. should add entries here.
@@ -153,11 +153,28 @@ def _hparams(algorithm, dataset, random_seed):
         _hparam('wasserstein_clip', 1e-3, lambda r: 10 ** r.uniform(-4, -2))
     elif 'ISR' in algorithm:
         _hparam('backbone', 'GroupDRO', lambda r: 'GroupDRO')
+        _hparam('groupdro_eta', 1e-2, lambda r: 10**r.uniform(-3, -1))
         if 'Mean' in algorithm:
             _hparam('d_spu_ratio', -1, lambda r: -1)
         else:
             assert 'Cov' in algorithm
             _hparam('d_spu_ratio', 0.5, lambda r: r.uniform(0.1, 0.8))
+    elif algorithm == 'CT4Recognition':
+        _hparam('SimCLR_temperature', 0.5, lambda r: 10**r.uniform(-1, 0.5))
+        _hparam('n_j', 5, lambda r: int(r.uniform(5, 15)))
+    elif algorithm == 'LaCIM':
+        _hparam('zs_dim', 256, lambda r: 256)
+        _hparam('optimizer', 'sgd', lambda r: 'sgd')
+        _hparam('momentum', 0.5, lambda r: 10 ** r.uniform(-1, 1))
+        _hparam('weight_recon', 1.0, lambda r: 10 ** r.uniform(-1, 1))
+        _hparam('weight_kld', 1.0, lambda r: 10 ** r.uniform(-1, 1))
+        _hparam('sample_num', 10, lambda r: int(r.uniform(8, 20)))
+
+        # inference parameters
+        _hparam('lr2', 5e-4, lambda r: 10 ** r.uniform(-3, -5))
+        _hparam('reg2', 5e-3, lambda r: 10 ** r.uniform(-2, -4))
+        _hparam('test_ep', 10, lambda r: 10)
+
     elif algorithm == 'TCM':
         _hparam('weight_cycleloss_ABA', 10.0, lambda r: 10 ** r.uniform(0, 2))
         _hparam('weight_cycleloss_BAB', 10.0, lambda r: 10 ** r.uniform(0, 2))
@@ -174,6 +191,10 @@ def _hparams(algorithm, dataset, random_seed):
         _hparam('linear_momentum', 0.9, lambda r: 0.9)
         _hparam('lr_d', 3e-3, lambda r: 10**r.uniform(-4.5, -2.5))
         _hparam('weight_align', 1.0, lambda r: 10**r.uniform(-1, 1))
+
+        _hparam('train_backbone', False, lambda r: False)
+
+        _hparam('n_cyclegan_step', int(args.steps * 0.75), lambda r: int(args.steps * 0.75))
 
 
 
@@ -194,10 +215,22 @@ def _hparams(algorithm, dataset, random_seed):
             _hparam('weight_decay', 0.0, lambda r: 0.0)
         else:
             _hparam('weight_decay', 0., lambda r: 10**r.uniform(-6, -2))
+    
+    if 'background' in dataset.lower() or 'color' in dataset.lower():
+        # Disabling color influencing augmentations to avoid cheating when colors are important spurious features
+        _hparam('color_aug', False, lambda r: False)
+    else:
+        _hparam('color_aug', True, lambda r: True)
 
     if dataset in SMALL_IMAGES:
         _hparam('batch_size', 64, lambda r: int(2**r.uniform(3, 9)))
     elif algorithm == 'ARM':
+        _hparam('batch_size', 8, lambda r: 8)
+    elif algorithm == 'TCM':
+        _hparam('batch_size', 2, lambda r: 2)
+    elif 'ISR' in algorithm:
+        _hparam('batch_size', 8, lambda r: 8)
+    elif algorithm == 'CT4Recognition':
         _hparam('batch_size', 8, lambda r: 8)
     elif dataset == 'DomainNet':
         _hparam('batch_size', 32, lambda r: int(2**r.uniform(3, 5)))
@@ -228,9 +261,9 @@ def _hparams(algorithm, dataset, random_seed):
     return hparams
 
 
-def default_hparams(algorithm, dataset):
-    return {a: b for a, (b, c) in _hparams(algorithm, dataset, 0).items()}
+def default_hparams(algorithm, dataset, args=None):
+    return {a: b for a, (b, c) in _hparams(algorithm, dataset, 0, args).items()}
 
 
-def random_hparams(algorithm, dataset, seed):
-    return {a: c for a, (b, c) in _hparams(algorithm, dataset, seed).items()}
+def random_hparams(algorithm, dataset, seed, args=None):
+    return {a: c for a, (b, c) in _hparams(algorithm, dataset, seed, args).items()}

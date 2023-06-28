@@ -201,7 +201,9 @@ def accuracy(network, loader, weights, device):
                 batch_weights = weights[weights_offset : weights_offset + len(x)]
                 weights_offset += len(x)
             batch_weights = batch_weights.to(device)
-            if p.size(1) == 1:
+            if len(p.shape) == 1:
+                correct += ((p == y).float() * batch_weights).sum().item()
+            elif p.size(1) == 1:
                 correct += (p.gt(0).eq(y).float() * batch_weights.view(-1, 1)).sum().item()
             else:
                 correct += (p.argmax(1).eq(y).float() * batch_weights).sum().item()

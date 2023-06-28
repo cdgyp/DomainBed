@@ -39,7 +39,7 @@ class Job:
 
         self.train_args = copy.deepcopy(train_args)
         self.train_args['output_dir'] = self.output_dir
-        command = ['python', '-m', 'codes.models.baselines.DomainBed.domainbed.scripts.train']
+        command = ['python', '-m', 'baselines.DomainBed.domainbed.scripts.train']
         for k, v in sorted(self.train_args.items()):
             if isinstance(v, list):
                 v = ' '.join([str(v_) for v_ in v])

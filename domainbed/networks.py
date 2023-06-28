@@ -180,7 +180,7 @@ class ContextNet(nn.Module):
     def forward(self, x):
         return self.context_net(x)
 
-from ....vit_pytorch.vit_pytorch.vit import ViT
+from codes.models.vit_pytorch.vit_pytorch import ViT
 class WrappedViT(nn.Module):
     class Hook:
         def __init__(self):

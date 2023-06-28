@@ -14,13 +14,14 @@ import PIL
 import torch
 import torchvision
 import torch.utils.data
+from tqdm.auto import tqdm
 
 from .. import datasets
 from .. import hparams_registry
 from .. import algorithms
 from ..lib import misc
 from ..lib.fast_data_loader import InfiniteDataLoader, FastDataLoader
-from ......utils import start_tensorboard_server
+from codes.utils import start_tensorboard_server
 
 if __name__ == "__main__" or True:
     parser = argparse.ArgumentParser(description='Domain generalization')
@@ -76,23 +77,29 @@ if __name__ == "__main__" or True:
     print("\tNumPy: {}".format(np.__version__))
     print("\tPIL: {}".format(PIL.__version__))
 
+    if args.algorithm in algorithms.DA_ONLY_ALGORITHMS:
+        args.task = 'domain_adaptation'
+        args.no_average = True
+
+
+    if args.algorithm in algorithms.HEAVY_PREDICTIONS:
+        args.checkpoint_freq = max(args.checkpoint_freq or 0, vars(algorithms)[args.algorithm].CHECKPOINT_FREQ, vars(datasets)[args.dataset].CHECKPOINT_FREQ)
+
     print('Args:')
     for k, v in sorted(vars(args).items()):
         print('\t{}: {}'.format(k, v))
 
+    args.steps = args.steps or vars(datasets)[args.dataset].N_STEPS
     if args.hparams_seed == 0:
-        hparams = hparams_registry.default_hparams(args.algorithm, args.dataset)
+        hparams = hparams_registry.default_hparams(args.algorithm, args.dataset, args)
     else:
         hparams = hparams_registry.random_hparams(args.algorithm, args.dataset,
-            misc.seed_hash(args.hparams_seed, args.trial_seed))
+            misc.seed_hash(args.hparams_seed, args.trial_seed), args)
     if args.hparams:
         hparams.update(json.loads(args.hparams))
     if args.batch_size:
         hparams['batch_size'] = args.batch_size
     hparams['featurizer'] = args.featurizer
-    if args.algorithm == 'InformationalHeat':
-        args.task = 'domain_adaptation'
-        args.no_average = True
 
     # start_tensorboard_server(hparams['writer'].get_logdir())
     hparams['writer'] = None
@@ -163,10 +170,13 @@ if __name__ == "__main__" or True:
         num_workers=dataset.N_WORKERS)
         for i, (env, env_weights) in enumerate(in_splits)
         if i not in args.test_envs and (args.task != 'domain_adaptation' or i in args.train_envs)]
+
     
     train_datasets = [env
         for i, (env, env_weights) in enumerate(in_splits)
         if i not in args.test_envs and (args.task != 'domain_adaptation' or i in args.train_envs)]
+        
+    len_epoch = max([int(len(env) // train_loaders[i].batch_size)  for i, env in enumerate(train_datasets)]) # some epochs require explicit epochs for scheduled training
 
     uda_loaders = [InfiniteDataLoader(
         dataset=env,
@@ -208,6 +218,8 @@ if __name__ == "__main__" or True:
 
     n_steps = args.steps or dataset.N_STEPS
     checkpoint_freq = args.checkpoint_freq or dataset.CHECKPOINT_FREQ
+    algorithm.setup(int(start_step // steps_per_epoch), int((n_steps + steps_per_epoch - 1) // steps_per_epoch))
+
 
     def save_checkpoint(filename):
         if args.skip_model_save:
@@ -224,7 +236,10 @@ if __name__ == "__main__" or True:
 
 
     last_results_keys = None
-    for step in range(start_step, n_steps):
+    for step in tqdm(range(start_step, n_steps)):
+        if step % steps_per_epoch == 0:
+            algorithm.begin_epoch()
+        
         step_start_time = time.time()
         minibatches_device = [(x.to(device), y.to(device))
             for x,y in next(train_minibatches_iterator)]
@@ -239,7 +254,7 @@ if __name__ == "__main__" or True:
         for key, val in step_vals.items():
             checkpoint_vals[key].append(val)
 
-        if (step % checkpoint_freq == 0) or (step == n_steps - 1):
+        if (step % checkpoint_freq == 0 and (args.algorithm not in algorithms.HEAVY_PREDICTIONS or step > 0)) or (step == n_steps - 1):
             results = {
                 'step': step,
                 'epoch': step / steps_per_epoch,
@@ -280,6 +295,8 @@ if __name__ == "__main__" or True:
 
             if args.save_model_every_checkpoint:
                 save_checkpoint(f'model_step{step}.pkl')
+        if (step + 1) % steps_per_epoch == 0:
+            algorithm.end_epoch()
 
     save_checkpoint('model.pkl')
 
