@@ -2420,7 +2420,7 @@ class CT4Recognition(DatasetRequiringAlgorithm):
     def end_epoch(self):
         self.simCLR.end_epoch()
 
-    def infinite_iterator(self, dataloader: DataLoader):
+    def infinite_iterator(dataloader: DataLoader):
         iterator = iter(dataloader)
         while True:
             try:
@@ -2429,69 +2429,105 @@ class CT4Recognition(DatasetRequiringAlgorithm):
                 iterator = iter(dataloader)
                 yield next(iterator)
 
-    def build_dataloaders(self, b):
+    class DualDataset(Dataset):
+        def __init__(self, dataset: Dataset, num_classes) -> None:
+            super().__init__()
+            self.num_classes = num_classes
+            self.dataset = dataset
+            tmp_dataloader = DataLoader(dataset, 128, False, num_workers=8) # to fasten label gathering with multiple workers
+
+            self.label_specific_dataloader = []
+            labels = torch.cat([label for _, label in tqdm(tmp_dataloader, desc="gathering labels")]).flatten()
+            assert max(labels) < self.num_classes, max(labels)
+
+            for y in tqdm(range(self.num_classes), desc="conditional dataloader"):
+                indices = [i for i, label in enumerate(labels) if label == y]
+                filtered = Subset(dataset, indices)
+                label_specific_sampler = RandomSampler(filtered, replacement=True)
+                self.label_specific_dataloader.append(DataLoader(filtered, 1, sampler=label_specific_sampler, drop_last=True))
+            self.conditional_iterators = [CT4Recognition.infinite_iterator(l) for l in self.label_specific_dataloader]
+        def __len__(self):  
+            return len(self.dataset)
+        def __getitem__(self, index):
+            x, y = self.dataset[index]
+            x_p, _ = next(self.conditional_iterators[y])
+            return x, x_p[0], y
+
+
+
+
+    def build_marginal_dataloaders(self, b):
         dataset = ConcatDataset(self.datasets)
         sampler = RandomSampler(dataset, replacement=True)
-        self.dataloader = DataLoader(dataset, batch_size=b, sampler=sampler, num_workers=8, pin_memory=True, drop_last=True)
-        self.marginal_iterator = self.infinite_iterator(self.dataloader)
+        self.marginal_dataloader = DataLoader(dataset, batch_size=b, sampler=sampler, num_workers=8, pin_memory=True, drop_last=True)
+        self.marginal_iterator = CT4Recognition.infinite_iterator(self.marginal_dataloader)
 
-        tmp_dataloader = DataLoader(dataset, 128, False, num_workers=8) # to fasten label gathering with multiple workers
-
-        self.label_specific_dataloader = []
-        labels = torch.cat([label for _, label in tqdm(tmp_dataloader, desc="gathering labels")]).flatten()
-        assert max(labels) < self.num_classes, max(labels)
-
-        for y in tqdm(range(self.num_classes), desc="conditional dataloader"):
-            indices = [i for i, label in enumerate(labels) if label == y]
-            filtered = Subset(dataset, indices)
-            label_specific_sampler = RandomSampler(filtered, replacement=True)
-            self.label_specific_dataloader.append(DataLoader(filtered, 1, num_workers=1, sampler=label_specific_sampler, pin_memory=True, drop_last=True))
-        self.conditional_iterators = [self.infinite_iterator(l) for l in self.label_specific_dataloader]
+    def build_joint_dataloaders(self, b):
+        dataset = ConcatDataset(self.datasets)
+        dual_dataset = self.DualDataset(dataset, self.num_classes)
+        sampler = RandomSampler(dual_dataset, replacement=True)
+        self.joint_dataloader = DataLoader(dual_dataset, b, sampler=sampler, num_workers=8, pin_memory=True)
+        self.joint_iterator = CT4Recognition.infinite_iterator(self.joint_dataloader)
         
 
-    def sample(self, b, ys=None):
-        if not hasattr(self, 'dataloader') or self.dataloader is None or self.dataloader.batch_size < b:
-            self.build_dataloaders(b)
+    def sample(self, b):
+        if not hasattr(self, 'marginal_dataloader') or self.marginal_dataloader is None or self.marginal_dataloader.batch_size < b:
+            self.build_marginal_dataloaders(b)
 
-        if ys is None:
-            return next(self.marginal_iterator)[0][:b]
-        else:
-            res = [next(self.conditional_iterators[y])[0] for y in ys]
-            res = torch.cat(res, dim=0)
-            assert len(res.shape) == 4
-            return res
+        return next(self.marginal_iterator)[0][:b]
 
-    def corrupted(self, b, device, y=None):
-        samples = self.sample(b, y).to(device)
+    def corrupted(self, b, device):
+        samples = self.sample(b).to(device)
         assert len(samples.shape) == 4, samples.shape # b c w h
         assert samples.shape[1] == 3, samples.shape
         assert len(samples) == b, (samples.shape, b)
         return self.shuffle(samples)
             
-    def joint(self, r, y=None):
-        x_prime = self.corrupted(b=len(r), device=r.device, y=y)
+    def joint(self, r):
+        x_prime = self.corrupted(b=len(r), device=r.device)
         joint = torch.cat([r, x_prime.flatten(1)], dim=1)
         assert len(joint.shape) == 2 and joint.shape[0] == r.shape[0]
         return joint
         
-    def predict(self, x, y=None):
+    def predict(self, x):
         r = self.featurizer(x)
         p_y = []
         for _ in range(self.n_j):
-            logit = self.classifier(self.joint(r, y=y))
+            logit = self.classifier(self.joint(r))
             assert len(logit.shape) == 2 and logit.shape[0] == x.shape[0], logit.shape
             p_y.append(torch.softmax(logit, dim=-1))
         p_y = torch.stack(p_y, dim=1)
         return p_y.mean(dim=1)
-
+    
     def update(self, minibatches, unlabeled=None):
         x = torch.cat([x for x, y in minibatches])
         y = torch.cat([y for x, y in minibatches])
 
-        losses_SimCLR = self.simCLR.update(x)
-        
+        device = x.device
 
-        loss = F.cross_entropy(self.predict(x, y), y)
+
+        losses_SimCLR = self.simCLR.update(x)
+
+        batch_size = len(x)
+        if not hasattr(self, 'joint_dataloader') or self.joint_dataloader is None or self.joint_dataloader.batch_size < batch_size:
+            self.build_joint_dataloaders(batch_size)
+
+        losses = []
+        self.featurizer.eval()
+        for j in range(1):
+            x, x_p, y = [a.to(device) for a in next(self.joint_iterator)]
+
+            with torch.no_grad():
+                r = self.featurizer(x)
+            x_p = self.shuffle(x_p)
+
+            joint = torch.cat([r, x_p.flatten(1)], dim=1)
+
+            losses.append(F.cross_entropy(self.classifier(joint), y).reshape(1))
+        
+        self.featurizer.train()
+        
+        loss = torch.cat(losses).mean()
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
