@@ -77,8 +77,6 @@ DA_ONLY_ALGORITHMS = [
 ]
 
 HEAVY_PREDICTIONS = [
-    'ISR_Mean',
-    'ISR_Cov',
 ]
 
 def get_algorithm_class(algorithm_name):
@@ -2312,7 +2310,7 @@ class AbstractISR(DatasetRequiringAlgorithm):
         self.backbone.featurizer.eval()
         with torch.no_grad():
             for env, dataset in enumerate(self.datasets):
-                dl = DataLoader(dataset, self.batch_size, False, num_workers=8, pin_memory=True)
+                dl = DataLoader(dataset, 64, False, num_workers=8, pin_memory=True)
                 for X, Y in dl:
                     feature = self.backbone.featurizer(X.to(device))
                     self.features.append(feature)
@@ -2897,7 +2895,7 @@ class TCM(Algorithm):
             'gpu_ids': [0],
             'isTrain': True,
             'continue_train': False,
-            'verbose': True,
+            'verbose': False,
             'checkpoints_dir': 'domainbed_test',
             'exp_name': 'none',
         }
@@ -2983,6 +2981,88 @@ class TCM(Algorithm):
                 if isinstance(name, str):
                     net = getattr(self, 'net' + name)
                     net.train()
+        def backward_G(self, backward_loss=True):
+            """Calculate the loss for generators G_A and G_B"""
+            lambda_idt = self.opt.lambda_identity
+            lambda_A = self.opt.lambda_A
+            lambda_B = self.opt.lambda_B
+            current_batch_size = self.real_A.shape[0]
+            # Identity loss
+            losses = torch.zeros(self.n_experts, current_batch_size * 2, device=self.device)   # n * batch_size
+            self.loss_G_A = []
+            self.loss_G_B = []
+            self.loss_cycle_A = []
+            self.loss_cycle_B = []
+            self.loss_idt_A = []
+            self.loss_idt_B = []
+            for i in range(0, self.n_experts):
+                if lambda_idt > 0:
+                    # G_A should be identity if real_B is fed: ||G_A(B) - B||
+                    self.idt_A = self.netG_A.get_expert(i)(self.real_B)
+                    self.loss_idt_A.append(self.criterionIdt(self.idt_A, self.real_B) * lambda_B * lambda_idt)
+                    # G_B should be identity if real_A is fed: ||G_B(A) - A||
+                    self.idt_B = self.netG_B.get_expert(i)(self.real_A)
+                    self.loss_idt_B.append(self.criterionIdt(self.idt_B, self.real_A) * lambda_A * lambda_idt)
+                else:
+                    self.loss_idt_A.append(torch.zeros(current_batch_size, 1, 1, 1, device=self.device))
+                    self.loss_idt_B.append(torch.zeros(current_batch_size, 1, 1, 1, device=self.device))
+
+                # GAN loss D_A(G_A(A))
+                self.loss_G_A.append(self.criterionGAN(self.netD_A(self.fake_B_all[i]), True))
+                # GAN loss D_B(G_B(B))
+                self.loss_G_B.append(self.criterionGAN(self.netD_B(self.fake_A_all[i]), True))
+                # Forward cycle loss || G_B(G_A(A)) - A||
+                self.loss_cycle_A.append(self.criterionCycle(self.rec_A_all[i], self.real_A) * lambda_A)
+                # Backward cycle loss || G_A(G_B(B)) - B||
+                self.loss_cycle_B.append(self.criterionCycle(self.rec_B_all[i], self.real_B) * lambda_B)
+                losses[i] = self.get_expert_loss(i)
+            expert_idx = self.get_expert_results(losses)    # 2batch_size
+            self.loss_G = 0
+            for i in range(0, current_batch_size):
+                if self.opt.lr_trick:
+                    a_expert_loss_scale = float(self.panel_tracker.sum() / float(self.panel_tracker[expert_idx[i]]) / float(self.n_experts))
+                    self.loss_G += (self.loss_G_A[expert_idx[i]][i].mean() + self.loss_cycle_A[expert_idx[i]][i].mean() + self.loss_idt_A[expert_idx[i]][i].mean()) / a_expert_loss_scale
+                    b_expert_loss_scale = float(self.panel_tracker.sum() / float(self.panel_tracker[expert_idx[i+current_batch_size]]) / float(self.n_experts))
+                    self.loss_G += (self.loss_G_B[expert_idx[i+current_batch_size]][i].mean() + self.loss_cycle_B[expert_idx[i+current_batch_size]][i].mean() + self.loss_idt_B[expert_idx[i+current_batch_size]][i].mean()) / b_expert_loss_scale
+                else:
+                    self.loss_G += (self.loss_G_A[expert_idx[i]][i].mean() + self.loss_G_B[expert_idx[i+current_batch_size]][i].mean() + self.loss_cycle_A[expert_idx[i]][i].mean() + self.loss_cycle_B[expert_idx[i+current_batch_size]][i].mean() + self.loss_idt_A[expert_idx[i]][i].mean() + self.loss_idt_B[expert_idx[i+current_batch_size]][i].mean())
+            self.loss_G /= float(current_batch_size)
+        
+            # select fake and reconstruct images
+            fake_B = torch.zeros(self.fake_B_all[0].shape, device=self.device)
+            rec_A = torch.zeros(self.rec_A_all[0].shape, device=self.device)
+            fake_A = torch.zeros(self.fake_A_all[0].shape, device=self.device)
+            rec_B = torch.zeros(self.rec_B_all[0].shape, device=self.device)
+            for i in range(0, self.real_A.shape[0]):
+                fake_B[i] = self.fake_B_all[expert_idx[i]][i]
+                rec_A[i] = self.rec_A_all[expert_idx[i]][i]
+                fake_A[i] = self.fake_A_all[expert_idx[i+current_batch_size]][i]
+                rec_B[i] = self.rec_B_all[expert_idx[i+current_batch_size]][i]
+
+            # convert loss to mean
+            loss_diversity = 0
+            for i in range(0, self.n_experts):
+                self.panel_tracker[i] += (expert_idx == i).sum()
+                self.epoch_panel_tracker[i] += (expert_idx == i).sum()
+                self.loss_G_A[i] = self.loss_G_A[i].mean()
+                self.loss_G_B[i] = self.loss_G_B[i].mean()
+                self.loss_cycle_A[i] = self.loss_cycle_A[i].mean()
+                self.loss_cycle_B[i] = self.loss_cycle_B[i].mean()
+                self.loss_idt_A[i] = self.loss_idt_A[i].mean()
+                self.loss_idt_B[i] = self.loss_idt_B[i].mean()
+                loss_diversity += self.criterionDiversity(fake_B, self.fake_B_all[i]) * lambda_A\
+                                + self.criterionDiversity(fake_A, self.fake_A_all[i]) * lambda_B
+            loss_diversity /= -float(self.n_experts)
+            self.loss_diversity = loss_diversity
+            self.loss_G += loss_diversity * self.opt.lambda_diversity
+            if backward_loss:
+                self.loss_G.backward(retain_graph=self.discriminate_feature)
+
+            self.fake_B = fake_B
+            self.rec_A = rec_A
+            self.fake_A = fake_A
+            self.rec_B = rec_B
+            self.expert_idx = expert_idx
     
     def __init__(self, input_shape, num_classes, num_domains, hparams):
         super().__init__(input_shape, num_classes, num_domains, hparams)
