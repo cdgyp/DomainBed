@@ -80,7 +80,6 @@ HEAVY_PREDICTIONS = [
     'ISR_Mean',
     'ISR_Cov',
     'CT4Recognition',
-    # 'LaCIM'
 ]
 
 def get_algorithm_class(algorithm_name):
@@ -2856,6 +2855,7 @@ class TCM(Algorithm):
             keywords = {Computer Science - Computer Vision and Pattern Recognition},
         }
     """
+    CHECKPOINT_FREQ = 100
     def translate_opt(self, num_classes, num_domains, hparams):
         import argparse
 
