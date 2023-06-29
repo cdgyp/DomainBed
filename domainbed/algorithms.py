@@ -79,7 +79,6 @@ DA_ONLY_ALGORITHMS = [
 HEAVY_PREDICTIONS = [
     'ISR_Mean',
     'ISR_Cov',
-    'CT4Recognition',
 ]
 
 def get_algorithm_class(algorithm_name):
