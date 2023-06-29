@@ -225,8 +225,6 @@ def _hparams(algorithm, dataset, random_seed, args=None):
     elif algorithm == 'TCM':
         # TCM uses CycleGAN, so its memory use is more intense
         _hparam('batch_size', 8, lambda r: 8)
-    elif 'ISR' in algorithm:
-        _hparam('batch_size', 8, lambda r: 8)
     elif dataset == 'DomainNet':
         _hparam('batch_size', 32, lambda r: int(2**r.uniform(3, 5)))
     else:
