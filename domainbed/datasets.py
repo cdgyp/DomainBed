@@ -374,7 +374,7 @@ class WILDSFMoW(WILDSDataset):
             dataset, "region", test_envs, hparams['data_augmentation'], hparams)
 
 class BackgroundSpuriousCorrelation(MultipleDomainDataset):
-    CHECKPOINT_FREQ = 25
+    CHECKPOINT_FREQ = 100
     ENVIRONMENTS = SyntheticDataset.DOMAIN_NAMES
     CLASS_NUMBER = 5
     CLASS_FOLD = True

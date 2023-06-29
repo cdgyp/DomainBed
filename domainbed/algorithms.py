@@ -2897,6 +2897,8 @@ class TCM(Algorithm):
 
             'gpu_ids': [0],
             'isTrain': True,
+            'continue_train': False,
+            'verbose': True,
             'checkpoints_dir': 'domainbed_test',
             'exp_name': 'none',
         }
@@ -2948,6 +2950,8 @@ class TCM(Algorithm):
             'baseline': False,
             'no_mapping': 0,
             'pretrain_iteration': 0,
+
+            'dda_continue_train': False
         }
 
         disciminator_args = {
@@ -2989,7 +2993,7 @@ class TCM(Algorithm):
         self.cyclegan = TCM.SimplifiedCycleGANModel(opt)
         # self.cyclegan.setup(opt)
         self.breaks = False
-        self.early_stop_active_experts = False
+        self.early_stop_active_expert = False
         self.n_experts = 1
 
         self.transform_A = get_transform(self.opt, grayscale=False)
@@ -3116,7 +3120,7 @@ class TCM(Algorithm):
         self.dda.train_mode()
         self.cyclegan.train()
 
-    def test(self):
+    def eval(self):
         self.dda.test_mode()
         self.cyclegan.eval()
         
