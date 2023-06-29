@@ -15,6 +15,19 @@ import numpy as np
 import torch
 from collections import Counter
 from itertools import cycle
+from tqdm.auto import tqdm
+
+class CudaTimer:
+    def __init__(self, name: str, unit='ms', silent=False, logger_func=None, threshold=None) -> None:
+        from linetimer import CodeTimer
+        self.timer = CodeTimer(name=name, silent=silent, unit=unit, logger_func=logger_func, threshold=threshold)
+    def __enter__(self):
+        torch.cuda.synchronize()
+        self.timer.__enter__()
+        return self
+    def __exit__(self, *args, **kwargs):
+        torch.cuda.synchronize()
+        self.timer.__exit__(*args, **kwargs)
 
 
 def distance(h1, h2):
@@ -191,7 +204,7 @@ def accuracy(network, loader, weights, device):
 
     network.eval()
     with torch.no_grad():
-        for x, y in loader:
+        for x, y in tqdm(loader, desc="testing"):
             x = x.to(device)
             y = y.to(device)
             p = network.predict(x)
@@ -501,3 +514,5 @@ class Nonparametric(Distribution1D):
             log_y = q
             v = torch.mean(self.data + self.bw * math.sqrt(-2 * log_y))
             return v
+
+        

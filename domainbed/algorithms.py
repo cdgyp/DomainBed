@@ -13,6 +13,9 @@ from torch.utils.tensorboard import SummaryWriter
 
 from tqdm.auto import tqdm
 
+from .lib.misc import CudaTimer
+
+
 try:
     from backpack import backpack, extend
     from backpack.extensions import BatchGrad
@@ -76,7 +79,8 @@ DA_ONLY_ALGORITHMS = [
 HEAVY_PREDICTIONS = [
     'ISR_Mean',
     'ISR_Cov',
-    'CT4Recognition'
+    'CT4Recognition',
+    # 'LaCIM'
 ]
 
 def get_algorithm_class(algorithm_name):
@@ -2338,6 +2342,10 @@ class AbstractISR(DatasetRequiringAlgorithm):
         features = self.backbone.featurizer(x)
         res = torch.tensor(self.isr_classifier.predict(features.cpu().numpy()))
         return res.to(x.device)
+    def train(self):
+        self.backbone.featurizer.train()
+    def eval(self):
+        self.backbone.featurizer.eval()
 
 
 class ISR_Mean(AbstractISR):
@@ -2558,6 +2566,7 @@ class LaCIM(Algorithm):
             langid = {english},
         }
     """
+    CHECKPOINT_FREQ = 300
     class ExpandedLaCIM_rho(LaCIM_rho):
         def __init__(self, in_channel=1, zs_dim=256, num_classes=1, decoder_type=0, total_env=2, args=None, is_cuda=1):
             self.image_size = args.image_size
@@ -2593,10 +2602,12 @@ class LaCIM(Algorithm):
                 self.TConv_bn_ReLU(in_channels=32, out_channels=16, kernel_size=2, stride=2, padding=0),
                 self.TConv_bn_ReLU(in_channels=16, out_channels=8, kernel_size=2, stride=2, padding=0),
                 self.TConv_bn_ReLU(in_channels=8, out_channels=4, kernel_size=2, stride=2, padding=0),
-                self.TConv_bn_ReLU(in_channels=4, out_channels=4, kernel_size=2, stride=2, padding=0),
-                nn.Conv2d(in_channels=4, out_channels=self.in_channel, kernel_size=256 - self.image_size + 1),
+                self.TConv_bn_ReLU(in_channels=4, out_channels=3, kernel_size=2, stride=2, padding=0),
+                # nn.Conv2d(in_channels=4, out_channels=self.in_channel, kernel_size=256 - self.image_size + 1),
+                    # WHY: this conv2d make back propagation 100x slow
                 nn.Sigmoid()
             )
+        
         def get_Dec_x_28(self):
             # HACK: avoid modification to paper's codes
             return self.get_Dec_x_256()
@@ -2605,6 +2616,21 @@ class LaCIM(Algorithm):
             rec_x = self.Dec_x(zs)
             pred_y = self.Dec_y(zs[:, self.z_dim:])
             return rec_x[:, :, -self.image_size:, -self.image_size:].contiguous(), pred_y
+        def reparametrize(self, mu: torch.Tensor, logvar: torch.Tensor, sample_num=None):
+            if sample_num is None:
+                return super().reparametrize(mu, logvar)
+            std = logvar.mul(0.5).exp_()
+            shape = torch.Size([sample_num] + list(std.shape))
+            if self.is_cuda:
+                eps = torch.cuda.FloatTensor(shape).normal_()
+            else:
+                eps = torch.FloatTensor(shape).normal_()
+            return eps.mul(std.unsqueeze(dim=0)).add_(mu.unsqueeze(dim=0))
+        def broadcast(self, indices: torch.Tensor):
+            assert len(indices.shape) == 1
+            if not hasattr(self, '_broadcast') or len(self._broadcast) != len(indices):
+                self._broadcast = torch.arange(0, len(indices), device=indices.device, dtype=torch.long)
+            return self._broadcast
         def forward(self, x, env=0, feature=0, is_train=0, is_debug=0):
             raw_x = x
             x = self.Enc_x(x)
@@ -2615,29 +2641,35 @@ class LaCIM(Algorithm):
                     z_init, s_init = None, None
                     for env_idx in range(self.args.env_num):
                         mu, logvar = self.encode(x, env_idx)
-                        for ss in range(self.args.sample_num):
-                            zs = self.reparametrize(mu, logvar)
-                            z = self.phi_z[env_idx](zs[:, :self.z_dim])
-                            s = self.phi_s[env_idx](zs[:, self.z_dim:])
-                            zs = torch.cat([z, s], dim=1)
-                            recon_x = self.Dec_x(zs)
-                            recon_x = recon_x[:, :, -self.image_size:, -self.image_size:].contiguous()
- 
-                            if z_init is None:
-                                z_init, s_init = z, s
-                                min_rec_loss = F.binary_cross_entropy(recon_x.view(-1, 3 * self.args.image_size ** 2),
-                                                                    (raw_x * 0.5 + 0.5).view(-1,
-                                                                                            3 * self.args.image_size ** 2),
-                                                                    reduction='none').mean(1)
-                            else:
-                                new_loss = F.binary_cross_entropy(recon_x.view(-1, 3 * self.args.image_size ** 2),
-                                                                    (raw_x * 0.5 + 0.5).view(-1,
-                                                                                            3 * self.args.image_size ** 2),
-                                                                    reduction='none').mean(1)
-                                for i in range(x.size(0)):
-                                    if new_loss[i] < min_rec_loss[i]:
-                                        min_rec_loss[i] = new_loss[i]
-                                        z_init[i], s_init[i] = z[i], s[i]
+                        zs = self.reparametrize(mu, logvar, self.args.sample_num)
+                        z = self.phi_z[env_idx](zs[..., :self.z_dim])
+                        s = self.phi_s[env_idx](zs[..., self.z_dim:])
+                        zs = torch.cat([z, s], dim=-1)
+                        recon_x = self.Dec_x(zs.flatten(start_dim=0, end_dim=1)).unflatten(dim=0, sizes=z.shape[:2])
+                        recon_x = recon_x[..., -self.image_size:, -self.image_size:].contiguous() # sampe_num b c h w
+                        rec_losses = F.binary_cross_entropy(
+                            recon_x.flatten(-3),
+                            (raw_x * 0.5 + 0.5).flatten(-3).expand(len(recon_x), -1, -1),
+                            reduction='none'
+                        ).mean(-1)
+                        # assert len(rec_losses.shape) == 2 and tuple(rec_losses.shape) == (self.args.sample_num, len(x)), (rec_losses.shape, x.shape)
+                        mins, indices = rec_losses.min(dim=0)
+                        brd = self.broadcast(indices)
+                        new_z, new_s = z[indices, brd], s[indices, brd]
+
+                        if z_init is None:
+                            z_init, s_init = new_z, new_s
+                            min_rec_loss = mins
+                        else:
+                            replace = (mins < min_rec_loss)
+                            # assert len(replace.shape) == 1 and replace.shape[0] == z_init.shape[0], (replace.shape, z_init.shape)
+                            # assert z_init.shape == new_z.shape, (z_init.shape, new_z.shape)
+                            # assert len(z_init.shape) == 2, z_init.shape
+                            replace = replace.unsqueeze(dim=-1)
+                            z_init = (~replace) * z_init + replace * new_z
+                            s_init = (~replace) * s_init + replace * new_s
+                            min_rec_loss = min_rec_loss.minimum(mins)
+                
                 with torch.enable_grad():
                     z, s = z_init, s_init
                     if is_debug:
@@ -2649,6 +2681,12 @@ class LaCIM(Algorithm):
             
                     for i in range(self.args.test_ep):
                         optimizer.zero_grad()
+                        zs = torch.cat([z, s], dim=1)
+                        rec_x = self.Dec_x(zs)
+                        loss = rec_x.mean()
+                        optimizer.zero_grad()
+                        loss.backward()
+                        optimizer.step()
                         recon_x, _ = self.get_x_y(z, s)
                         assert recon_x.requires_grad
                         BCE = F.binary_cross_entropy(recon_x.view(-1, 3 * self.args.image_size ** 2),
@@ -2794,10 +2832,6 @@ class LaCIM(Algorithm):
             "recon_loss":   recon_loss.item(),
             "loss":         loss.item(),
         }
-    def train(self):
-        self.model.train()
-    def eval(self):
-        self.model.eval()
 
 
 

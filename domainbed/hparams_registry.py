@@ -164,7 +164,7 @@ def _hparams(algorithm, dataset, random_seed, args=None):
         _hparam('n_j', 5, lambda r: int(r.uniform(5, 15)))
     elif algorithm == 'LaCIM':
         _hparam('zs_dim', 256, lambda r: 256)
-        _hparam('optimizer', 'sgd', lambda r: 'sgd')
+        _hparam('optimizer', 'adam', lambda r: 'adam')
         _hparam('momentum', 0.5, lambda r: 10 ** r.uniform(-1, 1))
         _hparam('weight_recon', 1.0, lambda r: 10 ** r.uniform(-1, 1))
         _hparam('weight_kld', 1.0, lambda r: 10 ** r.uniform(-1, 1))
@@ -173,7 +173,7 @@ def _hparams(algorithm, dataset, random_seed, args=None):
         # inference parameters
         _hparam('lr2', 5e-4, lambda r: 10 ** r.uniform(-3, -5))
         _hparam('reg2', 5e-3, lambda r: 10 ** r.uniform(-2, -4))
-        _hparam('test_ep', 10, lambda r: 10)
+        _hparam('test_ep', 10, lambda r: r.uniform(8, 20))
 
     elif algorithm == 'TCM':
         _hparam('weight_cycleloss_ABA', 10.0, lambda r: 10 ** r.uniform(0, 2))
@@ -195,10 +195,6 @@ def _hparams(algorithm, dataset, random_seed, args=None):
         _hparam('train_backbone', False, lambda r: False)
 
         _hparam('n_cyclegan_step', int(args.steps * 0.75), lambda r: int(args.steps * 0.75))
-
-
-
-
 
     # Dataset-and-algorithm-specific hparam definitions. Each block of code
     # below corresponds to exactly one hparam. Avoid nested conditionals.
@@ -227,7 +223,7 @@ def _hparams(algorithm, dataset, random_seed, args=None):
     elif algorithm == 'ARM':
         _hparam('batch_size', 8, lambda r: 8)
     elif algorithm == 'TCM':
-        _hparam('batch_size', 2, lambda r: 2)
+        _hparam('batch_size', 8, lambda r: 8)
     elif 'ISR' in algorithm:
         _hparam('batch_size', 8, lambda r: 8)
     elif algorithm == 'CT4Recognition':
