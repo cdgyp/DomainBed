@@ -168,12 +168,12 @@ def _hparams(algorithm, dataset, random_seed, args=None):
         _hparam('momentum', 0.5, lambda r: 10 ** r.uniform(-1, 1))
         _hparam('weight_recon', 1.0, lambda r: 10 ** r.uniform(-1, 1))
         _hparam('weight_kld', 1.0, lambda r: 10 ** r.uniform(-1, 1))
-        _hparam('sample_num', 10, lambda r: int(r.uniform(8, 20)))
+        _hparam('sample_num', 10, lambda r: r.randint(8, 21))
 
         # inference parameters
         _hparam('lr2', 5e-4, lambda r: 10 ** r.uniform(-3, -5))
         _hparam('reg2', 5e-3, lambda r: 10 ** r.uniform(-2, -4))
-        _hparam('test_ep', 10, lambda r: r.uniform(8, 20))
+        _hparam('test_ep', 10, lambda r: r.randint(8, 21))
 
     elif algorithm == 'TCM':
         _hparam('weight_cycleloss_ABA', 10.0, lambda r: 10 ** r.uniform(0, 2))
