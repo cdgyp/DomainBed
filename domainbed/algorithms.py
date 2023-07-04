@@ -2095,7 +2095,6 @@ from codes.models import (
     attention,
     attention_memory, 
     erm, 
-    heat, 
     discrete_rate_distortion, 
     inference,
 )
@@ -2155,7 +2154,8 @@ class InformationalHeat(Algorithm):
             # ),
             discrete_rate_distortion.DiscreteRateDistortionPlugin(
                 D=hparams['D'], 
-                dim_input=(heads * 1 + 2) * dim, dim_output=dim, n_key=n_key, n_domain=12, depth_mlp=3, dim_mlp=512, beta=0.5, lr=hparams['lr_g'] * 10,
+                dim_input=(heads * 1 + 2) * dim, dim_output=dim, n_key=n_key, n_domain=12, depth_mlp=3, dim_mlp=512, beta=0.5, 
+                lr=hparams['lr_d'] * 10,
                 weight_distortion=hparams['weight_distortion'],
                 weight_heat=hparams['weight_heat']
             ),
@@ -2171,6 +2171,7 @@ class InformationalHeat(Algorithm):
                 lr=hparams['lr_d'],
                 loss_fn=abstraction.WassersteinLoss(c=hparams['wasserstein_clip']),
             ),
+            writer=hparams['writer']
         )
 
         self.trainer = training.Training(
@@ -2178,7 +2179,7 @@ class InformationalHeat(Algorithm):
             self.model, 
             [0]*15, 
             hparams['lr_g'],
-            writer=None, 
+            writer=hparams['writer'], 
             test_every_epoch=None,
             test_batch=None,
             save_every_epoch=None,
@@ -2193,13 +2194,15 @@ class InformationalHeat(Algorithm):
         self.model.epoch = 0
 
     def update(self, minibatches, unlabeled=None):
-        x, y = minibatches[0]
         assert unlabeled is not None
+        if len(minibatches) > 1:
+            print("warning: multiple source domains")
+        x, y = minibatches[0]
         unlabeled = unlabeled[0]
         unlabeled_Y = torch.zeros([len(unlabeled)], device=unlabeled.device, dtype=torch.long)
         X, Y = torch.cat([x, unlabeled]), torch.cat([y, unlabeled_Y])
         D = torch.cat([torch.full([len(x)], fill_value=0, device=x.device, dtype=torch.long), torch.full([len(unlabeled)], fill_value=1, device=unlabeled.device, dtype=torch.long)])
-        labeled = torch.cat([torch.full([len(x)], fill_value=True, device=x.device, dtype=torch.bool), torch.full([len(x)], fill_value=False, device=x.device, dtype=torch.bool)])
+        labeled = torch.cat([torch.full([len(x)], fill_value=True, device=x.device, dtype=torch.bool), torch.full([len(unlabeled_Y)], fill_value=False, device=x.device, dtype=torch.bool)])
 
         losses = self.trainer._train_batch(X, Y, D, labeled)
         self.model.iteration = self.model.iteration + 1
@@ -2217,10 +2220,8 @@ class InformationalHeat(Algorithm):
 
     def predict(self, x):
         return self.model(x, None, None, None, test_mode=True)
-    def train(self):
-        self.model.train()
-    def eval(self):
-        self.model.eval()
+    def end_epoch(self):
+        self.model.epoch += 1
 
 from torch.utils.data import Dataset, DataLoader
 import sys
