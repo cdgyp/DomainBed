@@ -47,7 +47,7 @@ if __name__ == "__main__" or True:
     parser.add_argument('--test_envs', type=int, nargs='+', default=[0])
     parser.add_argument('--output_dir', type=str, default="train_output")
     parser.add_argument('--holdout_fraction', type=float, default=0.2)
-    parser.add_argument('--uda_holdout_fraction', type=float, default=0.9,
+    parser.add_argument('--uda_holdout_fraction', type=float, default=0.8,
         help="For domain adaptation, % of test to use unlabeled for training.")
     parser.add_argument('--skip_model_save', action='store_true')
     parser.add_argument('--save_model_every_checkpoint', action='store_true')
@@ -57,6 +57,7 @@ if __name__ == "__main__" or True:
     parser.add_argument('--featurizer', type=str, default='CNN', choices=['CNN', 'ViT'])
     parser.add_argument('--no_average', action='store_true',
         help='Do not average statistics records but pick the last one. Automatically true when algorithm is InformationalHeat')
+    parser.add_argument('--tensorboard', action='store_true')
     args = parser.parse_args()
 
     # If we ever want to implement checkpointing, just persist these values
@@ -80,6 +81,8 @@ if __name__ == "__main__" or True:
     if args.algorithm in algorithms.DA_ONLY_ALGORITHMS:
         args.task = 'domain_adaptation'
         args.no_average = True
+    if args.algorithm == 'InformationalHeat':
+        args.tensorboard = True
 
 
     if args.algorithm in algorithms.HEAVY_PREDICTIONS:
@@ -101,8 +104,12 @@ if __name__ == "__main__" or True:
         hparams['batch_size'] = args.batch_size
     hparams['featurizer'] = args.featurizer
 
-    # start_tensorboard_server(hparams['writer'].get_logdir())
-    hparams['writer'] = None
+    if args.tensorboard:
+        from codes.utils import new_experiment
+        hparams['writer'] = new_experiment(None, None, True, args.output_dir)
+        start_tensorboard_server(hparams['writer'].get_logdir())
+    else:
+        hparams['writer'] = None
 
     print('HParams:')
     for k, v in sorted(hparams.items()):
@@ -128,7 +135,7 @@ if __name__ == "__main__" or True:
     # To allow unsupervised domain adaptation experiments, we split each test
     # env into 'in-split', 'uda-split' and 'out-split'. The 'in-split' is used
     # by collect_results.py to compute classification accuracies.  The
-    # 'out-split' is used by the Oracle model selectino method. The unlabeled
+    # 'out-split' is used by the Oracle model selection method. The unlabeled
     # samples in 'uda-split' are passed to the algorithm at training time if
     # args.task == "domain_adaptation". If we are interested in comparing
     # domain generalization and domain adaptation results, then domain
@@ -137,6 +144,7 @@ if __name__ == "__main__" or True:
     in_splits = []
     out_splits = []
     uda_splits = []
+    uda_envs = []
     for env_i, env in enumerate(dataset):
         uda = []
         out, in_ = misc.split_dataset(env,
@@ -146,6 +154,10 @@ if __name__ == "__main__" or True:
             uda, in_ = misc.split_dataset(in_,
                 int(len(in_)*args.uda_holdout_fraction),
                 misc.seed_hash(args.trial_seed, env_i))
+            uda_envs.append(env_i)
+            print(f"env {env_i}:", len(uda), "samples are used for UDA,", len(in_), "for results,", len(out), "for oracle.")
+        else:
+            print(f"env {env_i}:", len(in_), "samples are used for training,", len(out), "for pure testing.")
 
         if hparams['class_balanced']:
             in_weights = misc.make_weights_for_balanced_classes(in_)
@@ -195,8 +207,9 @@ if __name__ == "__main__" or True:
         for i in range(len(in_splits))]
     eval_loader_names += ['env{}_out'.format(i)
         for i in range(len(out_splits))]
+    assert len(uda_splits) == len(uda_envs)
     eval_loader_names += ['env{}_uda'.format(i)
-        for i in range(len(uda_splits))]
+        for i in uda_envs]
 
     algorithm_class = algorithms.get_algorithm_class(args.algorithm)
     algorithm = algorithm_class(dataset.input_shape, dataset.num_classes,
@@ -236,7 +249,8 @@ if __name__ == "__main__" or True:
 
 
     last_results_keys = None
-    for step in tqdm(range(start_step, n_steps)):
+    # for step in tqdm(range(start_step, n_steps)):
+    for step in range(start_step, n_steps):
         if step % steps_per_epoch == 0:
             algorithm.begin_epoch()
         
@@ -281,7 +295,7 @@ if __name__ == "__main__" or True:
                 colwidth=12)
 
             results.update({
-                'hparams': hparams,
+                'hparams': {k:v for k, v in hparams.items() if k != 'writer'},
                 'args': vars(args)
             })
 
