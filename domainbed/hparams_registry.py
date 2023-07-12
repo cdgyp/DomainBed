@@ -143,12 +143,12 @@ def _hparams(algorithm, dataset, random_seed, args=None):
         _hparam('eqrm_lr', 1e-6, lambda r: 10 ** r.uniform(-7, -5))
     elif algorithm == 'InformationalHeat':
         _hparam('depth', 5, lambda r: 5)
-        _hparam('weight_heat', 1e-6, lambda r: 10 ** r.uniform(-7, -3))
+        _hparam('weight_heat', 1e-3, lambda r: 10 ** r.uniform(-4, -2))
         _hparam('n_cls', 8, lambda r: 8)
-        _hparam('weight_single', 1e0, lambda r: 10 ** r.uniform(-2, 2))
-        _hparam('alpha', 1e2, lambda r: 10 ** r.uniform(1, 3))
-        _hparam('weight_confidence', 0, lambda r: 0)
-        _hparam('D', 1000, lambda r: 1000)
+        _hparam('weight_single', 1e0, lambda r: 10 ** r.uniform(-1, 1))
+        # _hparam('alpha', 1e2, lambda r: 10 ** r.uniform(1, 3))
+        _hparam('weight_confidence', 0.0, lambda r: 0.0)
+        _hparam('D', 1000.0, lambda r: 1000.0)
         _hparam('weight_distortion', 1e1, lambda r: 10 ** r.uniform(0, 2))
         _hparam('wasserstein_clip', 1e-3, lambda r: 10 ** r.uniform(-4, -2))
     elif 'ISR' in algorithm:
@@ -169,6 +169,9 @@ def _hparams(algorithm, dataset, random_seed, args=None):
         _hparam('weight_recon', 1.0, lambda r: 10 ** r.uniform(-1, 1))
         _hparam('weight_kld', 1.0, lambda r: 10 ** r.uniform(-1, 1))
         _hparam('sample_num', 10, lambda r: r.randint(8, 21))
+        _hparam('lr_decay', 0.5, lambda r: r.uniform(0.3, 0.7))
+        _hparam('lr_controller', 80, lambda r: 80)
+        
 
         # inference parameters
         _hparam('lr2', 5e-4, lambda r: 10 ** r.uniform(-3, -5))
@@ -201,6 +204,10 @@ def _hparams(algorithm, dataset, random_seed, args=None):
 
     if dataset in SMALL_IMAGES:
         _hparam('lr', 1e-3, lambda r: 10**r.uniform(-4.5, -2.5))
+    elif algorithm == 'LaCIM':
+        _hparam('lr', 0.1, lambda r: 10**r.uniform(-2, -0.5)) # yes, it is this large according to LaCIM/README.md
+    elif algorithm == 'InformationalHeat':
+        _hparam('lr', 1e-5, lambda r: 10**r.uniform(-6, -4))
     else:
         _hparam('lr', 5e-5, lambda r: 10**r.uniform(-5, -3.5))
 
@@ -209,6 +216,8 @@ def _hparams(algorithm, dataset, random_seed, args=None):
     else:
         if algorithm == 'InformationalHeat':
             _hparam('weight_decay', 0.0, lambda r: 0.0)
+        elif algorithm == 'LaCIM':
+            _hparam('weight_decay', 2e-4, lambda r: 10**r.uniform(-5, -4.5))
         else:
             _hparam('weight_decay', 0., lambda r: 10**r.uniform(-6, -2))
     
@@ -234,8 +243,6 @@ def _hparams(algorithm, dataset, random_seed, args=None):
         _hparam('lr_g', 1e-3, lambda r: 10**r.uniform(-4.5, -2.5))
     elif algorithm in ['DANN', 'CDANN']:
         _hparam('lr_g', 5e-5, lambda r: 10**r.uniform(-5, -3.5))
-    elif algorithm in ['InformationalHeat']:
-        _hparam('lr_g', 1e-4, lambda r: 10**r.uniform(-5, -3))
 
     if algorithm in ['DANN', 'CDANN'] and dataset in SMALL_IMAGES:
         _hparam('lr_d', 1e-3, lambda r: 10**r.uniform(-4.5, -2.5))

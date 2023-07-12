@@ -97,7 +97,7 @@ def all_test_env_combinations(n):
             yield [i, j]
 
 def make_args_list(n_trials, dataset_names, algorithms, n_hparams_from, n_hparams, steps,
-    data_dir, task, holdout_fraction, single_test_envs, hparams, device, test_envs, featurizer, checkpoint_freq):
+    data_dir, task, holdout_fraction, single_test_envs, hparams, device, test_envs, featurizer, checkpoint_freq, start_trial_seed=0):
     args_list = []
     for trial_seed in range(n_trials):
         for dataset in dataset_names:
@@ -123,11 +123,11 @@ def make_args_list(n_trials, dataset_names, algorithms, n_hparams_from, n_hparam
                         train_args['hparams_seed'] = hparams_seed
                         train_args['data_dir'] = data_dir
                         train_args['task'] = task
-                        train_args['trial_seed'] = trial_seed
+                        train_args['trial_seed'] = trial_seed + start_trial_seed
                         train_args['device'] = device
                         train_args['featurizer'] = featurizer
                         train_args['seed'] = misc.seed_hash(dataset,
-                            algorithm, test_envs, hparams_seed, trial_seed)
+                            algorithm, test_envs, hparams_seed, trial_seed + start_trial_seed)
                         train_args['checkpoint_freq'] = checkpoint_freq
                         if steps is not None:
                             train_args['steps'] = steps
@@ -165,7 +165,8 @@ if __name__ == "__main__":
     parser.add_argument('--device', type=str, default='cpu')
     parser.add_argument('--test_envs', nargs='+', type=int, default=[])
     parser.add_argument('--featurizer', type=str, default='CNN')
-    parser.add_argument('--checkpoint_freq', type=int, default=None)
+    parser.add_argument('--checkpoint_freq', type=int, default=-1)
+    parser.add_argument('--start_trial_seed', type=int, default=0)
     args = parser.parse_args()
 
     args_list = make_args_list(
@@ -183,7 +184,8 @@ if __name__ == "__main__":
         device=args.device,
         test_envs=args.test_envs,
         featurizer=args.featurizer,
-        checkpoint_freq=args.checkpoint_freq
+        checkpoint_freq=args.checkpoint_freq,
+        start_trial_seed=args.start_trial_seed
     )
 
     jobs = [Job(train_args, args.output_dir) for train_args in args_list]

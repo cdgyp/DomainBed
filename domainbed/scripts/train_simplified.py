@@ -20,7 +20,8 @@ from .. import datasets
 from .. import hparams_registry
 from .. import algorithms
 from ..lib import misc
-from ..lib.fast_data_loader import InfiniteDataLoader, FastDataLoader
+from ..lib.fast_data_loader import FastDataLoader, InfiniteDataLoader
+
 from codes.utils import start_tensorboard_server
 from codes.models.utils import infinite_iterator
 
@@ -47,8 +48,8 @@ if __name__ == "__main__" or True:
     parser.add_argument('--train_envs', type=int, nargs='+', default=[0])
     parser.add_argument('--test_envs', type=int, nargs='+', default=[0])
     parser.add_argument('--output_dir', type=str, default="train_output")
-    parser.add_argument('--holdout_fraction', type=float, default=0.2)
-    parser.add_argument('--uda_holdout_fraction', type=float, default=0.8,
+    parser.add_argument('--holdout_fraction', type=float, default=0.01)
+    parser.add_argument('--uda_holdout_fraction', type=float, default=0.99,
         help="For domain adaptation, % of test to use unlabeled for training.")
     parser.add_argument('--skip_model_save', action='store_true')
     parser.add_argument('--save_model_every_checkpoint', action='store_true')
@@ -60,6 +61,9 @@ if __name__ == "__main__" or True:
         help='Do not average statistics records but pick the last one. Automatically true when algorithm is InformationalHeat')
     parser.add_argument('--tensorboard', action='store_true')
     args = parser.parse_args()
+
+    if args.trial_seed % 2 == 0:
+        args.uda_holdout_fraction = 0.8
 
     if args.checkpoint_freq < 0: args.checkpoint_freq = None
 
@@ -83,6 +87,7 @@ if __name__ == "__main__" or True:
 
     if args.algorithm in algorithms.DA_ONLY_ALGORITHMS:
         args.task = 'domain_adaptation'
+        args.no_average = True
     if args.algorithm == 'InformationalHeat':
         args.tensorboard = True
 
@@ -117,14 +122,15 @@ if __name__ == "__main__" or True:
     for k, v in sorted(hparams.items()):
         print('\t{}: {}'.format(k, v))
 
-    random.seed(args.seed)
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
-    torch.backends.cudnn.deterministic = True
-    if args.algorithm == 'InformationalHeat':
-        pass
-    else:
-        torch.backends.cudnn.benchmark = False
+    if (args.trial_seed // 2) % 2 == 0:
+        random.seed(args.seed)
+        np.random.seed(args.seed)
+        torch.manual_seed(args.seed)
+        torch.backends.cudnn.deterministic = True
+        if args.algorithm == 'InformationalHeat':
+            pass
+        else:
+            torch.backends.cudnn.benchmark = False
 
     device = args.device
 
@@ -180,7 +186,15 @@ if __name__ == "__main__" or True:
     if args.task == "domain_adaptation" and len(uda_splits) == 0:
         raise ValueError("Not enough unlabeled samples for domain adaptation.")
 
-    if args.algorithm == 'InformationalHeat':
+    if (args.trial_seed // 4) % 2 == 0:
+        train_loaders = [InfiniteDataLoader(
+            dataset=env,
+            weights=env_weights,
+            batch_size=hparams['batch_size'],
+            num_workers=dataset.N_WORKERS)
+            for i, (env, env_weights) in enumerate(in_splits)
+            if i not in args.test_envs and (args.task != 'domain_adaptation' or i in args.train_envs)]
+    else:
         train_loaders = [infinite_iterator(torch.utils.data.DataLoader(
                 dataset=env,
                 batch_size=hparams['batch_size'],
@@ -190,14 +204,7 @@ if __name__ == "__main__" or True:
             ))
             for i, (env, env_weights) in enumerate(in_splits)
             if i not in args.test_envs and (args.task != 'domain_adaptation' or i in args.train_envs)]
-    else:
-        train_loaders = [InfiniteDataLoader(
-            dataset=env,
-            weights=env_weights,
-            batch_size=hparams['batch_size'],
-            num_workers=dataset.N_WORKERS)
-            for i, (env, env_weights) in enumerate(in_splits)
-            if i not in args.test_envs and (args.task != 'domain_adaptation' or i in args.train_envs)]
+
     
     train_datasets = [env
         for i, (env, env_weights) in enumerate(in_splits)
@@ -205,7 +212,14 @@ if __name__ == "__main__" or True:
         
     len_epoch = max([int(len(env) // train_loaders[i].batch_size)  for i, env in enumerate(train_datasets)]) # some epochs require explicit epochs for scheduled training
 
-    if args.algorithm == 'InformationalHeat':
+    if (args.trial_seed // 4) % 2 == 0:
+        uda_loaders = [InfiniteDataLoader(
+            dataset=env,
+            weights=env_weights,
+            batch_size=hparams['batch_size'],
+            num_workers=dataset.N_WORKERS)
+            for i, (env, env_weights) in enumerate(uda_splits)]
+    else:
         uda_loaders = [infinite_iterator(torch.utils.data.DataLoader(
                 dataset=env,
                 batch_size=hparams['batch_size'],
@@ -214,13 +228,6 @@ if __name__ == "__main__" or True:
                 persistent_workers=True,
                 drop_last=True
             ))
-            for i, (env, env_weights) in enumerate(uda_splits)]
-    else:
-        uda_loaders = [InfiniteDataLoader(
-            dataset=env,
-            weights=env_weights,
-            batch_size=hparams['batch_size'],
-            num_workers=dataset.N_WORKERS)
             for i, (env, env_weights) in enumerate(uda_splits)]
 
     eval_loaders = [FastDataLoader(
@@ -268,11 +275,12 @@ if __name__ == "__main__" or True:
             "args": vars(args),
             "model_input_shape": dataset.input_shape,
             "model_num_classes": dataset.num_classes,
-            "model_num_domains": len(dataset) - len(args.test_envs) if args.task != 'domain_adaptation' else len(dataset),
+            "model_num_domains": len(dataset) - len(args.test_envs),
             "model_hparams": hparams,
             "model_dict": algorithm.state_dict()
         }
         torch.save(save_dict, os.path.join(args.output_dir, filename))
+
 
     last_results_keys = None
     # for step in tqdm(range(start_step, n_steps)):

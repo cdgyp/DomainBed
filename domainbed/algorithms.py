@@ -15,6 +15,8 @@ from tqdm.auto import tqdm
 
 from .lib.misc import CudaTimer
 
+from codes.models.utils import infinite_iterator
+
 
 try:
     from backpack import backpack, extend
@@ -2118,10 +2120,10 @@ class InformationalHeat(Algorithm):
             'n_query': n_query,
             'uncaptured_dot_loss_weight': hparams['weight_single'],
         }
-
+        assert input_shape[1] == input_shape[2], input_shape
         self.model = model.Model(
             attention.ViT(
-                image_size=input_shape[1:],
+                image_size=input_shape[1],
                 patch_size=patch_size,
                 num_classes=num_classes,
                 dim=dim,
@@ -2130,14 +2132,14 @@ class InformationalHeat(Algorithm):
                 mlp_dim=mlp_dim,
                 attention_type=attention.ShannonTop1Attention,
                 max_token=n_query,
-                dropout=hparams['resnet_dropout'],
+                dropout=0.0,
                 dim_head=mlp_dim // heads,
                 pool='none',
                 attention_args=attention_args,
                 skip_connection=True,
                 n_cls=hparams['n_cls']
             ),
-            inference.InferencePlugin(n_inductive_bias=hparams['n_cls'], pool='max_bias', skip_connection=True),
+            inference.InferencePlugin(n_inductive_bias=hparams['n_cls'], pool='max_bias', skip_connection=1),
             erm.ERM(),
             attention_memory.AttentionMemoryPlugin(has_residual=False),
             # LocalSimplicityPlugin(
@@ -2167,7 +2169,7 @@ class InformationalHeat(Algorithm):
                 k=1,
                 weight=1e1,
                 abstraction_per_update=0,
-                alpha=hparams['alpha'],
+                alpha=hparams['lr_d'] / hparams['lr'],
                 lr=hparams['lr_d'],
                 loss_fn=abstraction.WassersteinLoss(c=hparams['wasserstein_clip']),
             ),
@@ -2177,8 +2179,8 @@ class InformationalHeat(Algorithm):
         self.trainer = training.Training(
             0, 
             self.model, 
-            [0]*15, 
-            hparams['lr_g'],
+            [None] * 15, 
+            hparams['lr'],
             writer=hparams['writer'], 
             test_every_epoch=None,
             test_batch=None,
@@ -2188,6 +2190,9 @@ class InformationalHeat(Algorithm):
             scheduler=True
         )
 
+        # print(self.model)
+        # print(self.trainer)
+
         self.num_domains = num_domains
         self.trainer._init_training()
         self.model.iteration = 0
@@ -2196,13 +2201,14 @@ class InformationalHeat(Algorithm):
     def update(self, minibatches, unlabeled=None):
         assert unlabeled is not None
         if len(minibatches) > 1:
-            print("warning: multiple source domains")
+            print("warning: multiple source domains, where only the 1st on is used")
         x, y = minibatches[0]
         unlabeled = unlabeled[0]
         unlabeled_Y = torch.zeros([len(unlabeled)], device=unlabeled.device, dtype=torch.long)
         X, Y = torch.cat([x, unlabeled]), torch.cat([y, unlabeled_Y])
         D = torch.cat([torch.full([len(x)], fill_value=0, device=x.device, dtype=torch.long), torch.full([len(unlabeled)], fill_value=1, device=unlabeled.device, dtype=torch.long)])
         labeled = torch.cat([torch.full([len(x)], fill_value=True, device=x.device, dtype=torch.bool), torch.full([len(unlabeled_Y)], fill_value=False, device=x.device, dtype=torch.bool)])
+        Y, D, labeled = Y.flatten(), D.flatten(), labeled.flatten()
 
         losses = self.trainer._train_batch(X, Y, D, labeled)
         self.model.iteration = self.model.iteration + 1
@@ -2210,18 +2216,20 @@ class InformationalHeat(Algorithm):
         losses = {key: float(value) for key, value in losses.items()}
         return {
             'n_inductive_bias_difference': losses['n_inductive_bias/difference'],
-            'distortions': [value for key, value in losses.items() if 'distortion' in key],
-            'heat': {
-                'Q_F': losses['heat/Q_F'],
-                'Q_0': losses['heat/Q_0']
-            }
+            'domain_discrimination': abs(losses['domain discrimination loss/attention']) + abs(losses['domain discrimination loss/initial token']),
+            **{key: value for key, value in losses.items() if 'distortion' in key},
+            'Q_F': losses['heat/Q_F'],
+            'Q_0': losses['heat/Q_0']
         }
 
 
     def predict(self, x):
+        self.model.eval()
         return self.model(x, None, None, None, test_mode=True)
     def end_epoch(self):
         self.model.epoch += 1
+        self.eval()
+        self.train()
 
 from torch.utils.data import Dataset, DataLoader
 import sys
@@ -2424,16 +2432,6 @@ class CT4Recognition(DatasetRequiringAlgorithm):
         self.simCLR.begin_epoch()
     def end_epoch(self):
         self.simCLR.end_epoch()
-
-    def infinite_iterator(dataloader: DataLoader):
-        iterator = iter(dataloader)
-        while True:
-            try:
-                yield next(iterator)
-            except StopIteration:
-                iterator = iter(dataloader)
-                yield next(iterator)
-
     class DualDataset(Dataset):
         def __init__(self, dataset: Dataset, num_classes) -> None:
             super().__init__()
@@ -2450,7 +2448,7 @@ class CT4Recognition(DatasetRequiringAlgorithm):
                 filtered = Subset(dataset, indices)
                 label_specific_sampler = RandomSampler(filtered, replacement=True)
                 self.label_specific_dataloader.append(DataLoader(filtered, 1, sampler=label_specific_sampler, drop_last=True))
-            self.conditional_iterators = [CT4Recognition.infinite_iterator(l) for l in self.label_specific_dataloader]
+            self.conditional_iterators = [infinite_iterator(l) for l in self.label_specific_dataloader]
         def __len__(self):  
             return len(self.dataset)
         def __getitem__(self, index):
@@ -2465,14 +2463,14 @@ class CT4Recognition(DatasetRequiringAlgorithm):
         dataset = ConcatDataset(self.datasets)
         sampler = RandomSampler(dataset, replacement=True)
         self.marginal_dataloader = DataLoader(dataset, batch_size=b, sampler=sampler, num_workers=8, pin_memory=True, drop_last=True)
-        self.marginal_iterator = CT4Recognition.infinite_iterator(self.marginal_dataloader)
+        self.marginal_iterator = infinite_iterator(self.marginal_dataloader)
 
     def build_joint_dataloaders(self, b):
         dataset = ConcatDataset(self.datasets)
         dual_dataset = self.DualDataset(dataset, self.num_classes)
         sampler = RandomSampler(dual_dataset, replacement=True)
         self.joint_dataloader = DataLoader(dual_dataset, b, sampler=sampler, num_workers=8, pin_memory=True)
-        self.joint_iterator = CT4Recognition.infinite_iterator(self.joint_dataloader)
+        self.joint_iterator = infinite_iterator(self.joint_dataloader)
         
 
     def sample(self, b):
@@ -2759,6 +2757,12 @@ class LaCIM(Algorithm):
         self.test_transform = transforms.Compose([
             transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
         ])
+
+        self.lr_controller = hparams['lr_controller']
+        self.lr_decay = hparams['lr_decay']
+        self.lr = hparams['lr']
+
+        self.epoch = 0
         
     
     def predict(self, x):
@@ -2785,6 +2789,11 @@ class LaCIM(Algorithm):
         KLD = -0.5 * torch.mean(1 + logvar - mu ** 2 - logvar.exp())
     
         return BCE, KLD
+        
+    def adjust_learning_rate(self):
+        for param_group in self.optimizer.param_groups:
+            new_lr = self.lr * self.lr_decay ** (self.epoch // self.lr_controler)
+            param_group['lr'] = self.lr * self.lr_decay ** (self.epoch // self.lr_controler)
 
     def update(self, minibatches, unlabeled=None):
         """
@@ -2829,6 +2838,10 @@ class LaCIM(Algorithm):
             "recon_loss":   recon_loss.item(),
             "loss":         loss.item(),
         }
+    def end_epoch(self):
+        self.epoch += 1
+    def begin_epoch(self):
+        self.adjust_learning_rate()
 
 
 
