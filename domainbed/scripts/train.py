@@ -180,7 +180,7 @@ if __name__ == "__main__" or True:
     if args.task == "domain_adaptation" and len(uda_splits) == 0:
         raise ValueError("Not enough unlabeled samples for domain adaptation.")
 
-    if args.algorithm == 'InformationalHeat':
+    if args.algorithm == 'InformationalHeat' and False:
         train_loaders = [infinite_iterator(torch.utils.data.DataLoader(
                 dataset=env,
                 batch_size=hparams['batch_size'],
@@ -205,7 +205,7 @@ if __name__ == "__main__" or True:
         
     len_epoch = max([int(len(env) // train_loaders[i].batch_size)  for i, env in enumerate(train_datasets)]) # some epochs require explicit epochs for scheduled training
 
-    if args.algorithm == 'InformationalHeat':
+    if args.algorithm == 'InformationalHeat' and False:
         uda_loaders = [infinite_iterator(torch.utils.data.DataLoader(
                 dataset=env,
                 batch_size=hparams['batch_size'],

@@ -2216,7 +2216,8 @@ class InformationalHeat(Algorithm):
         losses = {key: float(value) for key, value in losses.items()}
         return {
             'n_inductive_bias_difference': losses['n_inductive_bias/difference'],
-            'domain_discrimination': abs(losses['domain discrimination loss/attention']) + abs(losses['domain discrimination loss/initial token']),
+            **{key[key.find('/')+1:] + '_discrmination': value for key, value in losses.items() if 'discrimination' in key and '<' not in key},
+            **{key[key.find('/')+1:] + '_discrmination_sqr': value ** 2 for key, value in losses.items() if 'discrimination' in key and '<' not in key},
             **{key: value for key, value in losses.items() if 'distortion' in key},
             'Q_F': losses['heat/Q_F'],
             'Q_0': losses['heat/Q_0']

@@ -64,6 +64,7 @@ if __name__ == "__main__" or True:
 
     if args.trial_seed % 2 == 0:
         args.uda_holdout_fraction = 0.8
+    print('uda_holdout:', args.uda_holdout_fraction)
 
     if args.checkpoint_freq < 0: args.checkpoint_freq = None
 
@@ -87,7 +88,7 @@ if __name__ == "__main__" or True:
 
     if args.algorithm in algorithms.DA_ONLY_ALGORITHMS:
         args.task = 'domain_adaptation'
-        args.no_average = True
+        # args.no_average = True
     if args.algorithm == 'InformationalHeat':
         args.tensorboard = True
 
@@ -131,6 +132,9 @@ if __name__ == "__main__" or True:
             pass
         else:
             torch.backends.cudnn.benchmark = False
+        print("seed controlled")
+    else:
+        print("seed free")
 
     device = args.device
 
@@ -187,6 +191,7 @@ if __name__ == "__main__" or True:
         raise ValueError("Not enough unlabeled samples for domain adaptation.")
 
     if (args.trial_seed // 4) % 2 == 0:
+        print("Infinite dataloaders")
         train_loaders = [InfiniteDataLoader(
             dataset=env,
             weights=env_weights,
@@ -195,6 +200,7 @@ if __name__ == "__main__" or True:
             for i, (env, env_weights) in enumerate(in_splits)
             if i not in args.test_envs and (args.task != 'domain_adaptation' or i in args.train_envs)]
     else:
+        print("Epoch dataloaders")
         train_loaders = [infinite_iterator(torch.utils.data.DataLoader(
                 dataset=env,
                 batch_size=hparams['batch_size'],
@@ -213,6 +219,7 @@ if __name__ == "__main__" or True:
     len_epoch = max([int(len(env) // train_loaders[i].batch_size)  for i, env in enumerate(train_datasets)]) # some epochs require explicit epochs for scheduled training
 
     if (args.trial_seed // 4) % 2 == 0:
+        print("Infinite dataloaders")
         uda_loaders = [InfiniteDataLoader(
             dataset=env,
             weights=env_weights,
@@ -220,6 +227,7 @@ if __name__ == "__main__" or True:
             num_workers=dataset.N_WORKERS)
             for i, (env, env_weights) in enumerate(uda_splits)]
     else:
+        print("Epoch dataloaders")
         uda_loaders = [infinite_iterator(torch.utils.data.DataLoader(
                 dataset=env,
                 batch_size=hparams['batch_size'],

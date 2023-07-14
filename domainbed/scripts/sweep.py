@@ -39,7 +39,7 @@ class Job:
 
         self.train_args = copy.deepcopy(train_args)
         self.train_args['output_dir'] = self.output_dir
-        command = ['python', '-m', 'baselines.DomainBed.domainbed.scripts.train']
+        command = ['python', '-m', 'baselines.DomainBed.domainbed.scripts.train_simplified']
         for k, v in sorted(self.train_args.items()):
             if isinstance(v, list):
                 v = ' '.join([str(v_) for v_ in v])
@@ -97,7 +97,7 @@ def all_test_env_combinations(n):
             yield [i, j]
 
 def make_args_list(n_trials, dataset_names, algorithms, n_hparams_from, n_hparams, steps,
-    data_dir, task, holdout_fraction, single_test_envs, hparams, device, test_envs, featurizer, checkpoint_freq, start_trial_seed=0):
+    data_dir, task, holdout_fraction, uda_holdout_fraction, single_test_envs, hparams, device, test_envs, featurizer, checkpoint_freq, start_trial_seed=0):
     args_list = []
     for trial_seed in range(n_trials):
         for dataset in dataset_names:
@@ -120,6 +120,7 @@ def make_args_list(n_trials, dataset_names, algorithms, n_hparams_from, n_hparam
                         train_args['algorithm'] = algorithm
                         train_args['test_envs'] = test_envs
                         train_args['holdout_fraction'] = holdout_fraction
+                        train_args['uda_holdout_fraction'] = uda_holdout_fraction
                         train_args['hparams_seed'] = hparams_seed
                         train_args['data_dir'] = data_dir
                         train_args['task'] = task
@@ -160,6 +161,7 @@ if __name__ == "__main__":
     parser.add_argument('--steps', type=int, default=None)
     parser.add_argument('--hparams', type=str, default=None)
     parser.add_argument('--holdout_fraction', type=float, default=0.2)
+    parser.add_argument('--uda_holdout_fraction', type=float, default=0.8)
     parser.add_argument('--single_test_envs', action='store_true')
     parser.add_argument('--skip_confirmation', action='store_true')
     parser.add_argument('--device', type=str, default='cpu')
@@ -179,6 +181,7 @@ if __name__ == "__main__":
         data_dir=args.data_dir,
         task=args.task,
         holdout_fraction=args.holdout_fraction,
+        uda_holdout_fraction=args.uda_holdout_fraction,
         single_test_envs=args.single_test_envs,
         hparams=args.hparams,
         device=args.device,

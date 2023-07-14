@@ -26,19 +26,27 @@ import warnings
 import matplotlib.pyplot as plt
 def plot_traces(traces, show_s=True):
     # 绘制每个 trace 的折线图
+    lowerbound, upperbound = 1, 0
     for i, (name, trace) in enumerate(traces):
         # 获取每个数据点的 acc_s 和 acc_t 值，并按照 step 排序
         data = sorted([(d['step'], d['acc_s'], d['acc_t']) for d in trace])
         steps, acc_s, acc_t = zip(*data)
+        lowerbound = min(lowerbound, min(acc_t))
+        upperbound = max(upperbound, max(acc_t))
 
         # 绘制 acc_t 的折线图，并添加算法名称到图例
         plt.plot(steps, acc_t, linestyle='-', color=f'C{i}', label=f'{name}')
 
         # 如果需要显示 acc_s，则绘制 acc_s 的折线图
         if show_s:
+            lowerbound = min(lowerbound, min(acc_s))
+            upperbound = max(upperbound, max(acc_s))
             plt.plot(steps, acc_s, linestyle='--', color=f'C{i}', label=f'{name}')
 
-    plt.ylim([0, 1])
+    interval = upperbound - lowerbound
+    lowerbound, upperbound = max(lowerbound - interval * 0.3, 0), min(upperbound + interval * 0.3, 1)
+
+    plt.ylim([lowerbound, upperbound])
 
     # 设置图例的位置和样式
     plt.legend(bbox_to_anchor=(1, 1), loc='upper left', borderaxespad=0.)

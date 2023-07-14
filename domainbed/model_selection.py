@@ -176,7 +176,7 @@ class InformationHeatSelectionMethod(SelectionMethod):
     def run_acc(self, run_records: Q):
         if run_records[0]['args']['steps'] < 5000:
             return None
-        min_Q_F = run_records.map(lambda rec: rec['heat']['Q_F']).min()
+        min_Q_F = run_records.map(lambda rec: rec['Q_F']).min()
         if min_Q_F < 0:
             return None
         train_domain = run_records[0]['args']['train_envs']
@@ -185,7 +185,7 @@ class InformationHeatSelectionMethod(SelectionMethod):
         train_domain = train_domain[0]
         test_domain = test_domain[0]
         train_acc = f'env{train_domain}_in_acc'
-        test_acc = f'env{test_domain}_in_acc'
+        test_acc = f'env{test_domain}_uda_acc' # see UDA transductive
 
         run_records = run_records.sorted(key=lambda x: x['step'])
         variance = 0
@@ -213,7 +213,7 @@ class InformationHeatSelectionMethod(SelectionMethod):
             # .filter(lambda x: x['variance'] <= 0.05)
             # .filter(lambda x: x['fluctuation'] <= 0.05)
             .filter(lambda x: x['min_in_window'] >= 0.90)
-            # .filter(lambda x: x['heat']['Q_F'] + x['heat']['Q_0'] >= 5)
+            # .filter(lambda x: x['Q_F'] + x['Q_0'] >= 5)
             .sorted(key=lambda x: x['n_inductive_bias_difference'])[-1]
         )
         distortions = selected['distortions']
@@ -222,7 +222,7 @@ class InformationHeatSelectionMethod(SelectionMethod):
             'test_acc': selected[test_acc],
             'etc': {
                 'difference': selected['n_inductive_bias_difference'],
-                'heat': selected['heat']['Q_F'] + selected['heat']['Q_0'],
+                'heat': selected['Q_F'] + selected['Q_0'],
                 'step': selected['step']
             }
         }

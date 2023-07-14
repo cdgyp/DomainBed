@@ -378,17 +378,17 @@ class BackgroundSpuriousCorrelation(MultipleDomainDataset):
     ENVIRONMENTS = SyntheticDataset.DOMAIN_NAMES
     CLASS_NUMBER = 5
     CLASS_FOLD = True
+    INPUT_SHAPE=(3, 224, 224)
 
     def __init__(self, root, test_envs, hparams) -> None:
         super().__init__()
-        patch_size = 16
         total_patch_number = 14
         image_patch_number = 10
         self.num_classes = BackgroundSpuriousCorrelation.CLASS_NUMBER
-        images = ImageFolder(root, OptionalToTensor())
-        scene = CenteredImageScene(
-            ClassReducer(images, self.num_classes, class_fold=BackgroundSpuriousCorrelation.CLASS_FOLD), 
-            patch_size, 
+        self.images = ImageFolder(root, OptionalToTensor())
+        self.scene = CenteredImageScene(
+            ClassReducer(self.images, self.num_classes, class_fold=BackgroundSpuriousCorrelation.CLASS_FOLD), 
+            self.INPUT_SHAPE[-1] // total_patch_number, 
             total_patch_number, 
             image_patch_number, 
             self.num_classes, 
@@ -398,12 +398,10 @@ class BackgroundSpuriousCorrelation(MultipleDomainDataset):
         self.datasets = []
         for i, domain_name in enumerate(BackgroundSpuriousCorrelation.ENVIRONMENTS):
             self.datasets.append(
-                SyntheticDataset(domain_name, i not in test_envs, scene, reduced=True)
+                SyntheticDataset(domain_name, i not in test_envs, self.scene, reduced=True)
             )
         
-        pn = assure_tuple(total_patch_number)
-
-        self.input_shape = (3, pn[0] * patch_size, pn[1] * patch_size)
+        self.input_shape = self.INPUT_SHAPE
 
 ## Spawrious base classes
 class CustomImageFolder(Dataset):
